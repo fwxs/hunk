@@ -196,7 +196,8 @@ runner exfil http \
 - [ ] Add authentication mechanisms (API keys, OAuth tokens)
 - [ ] Add exfiltration via social media platforms (Discord, Telegram bots)
 - [ ] Add exfiltration via file sharing services (Dropbox, Google Drive)
-
+- [ ] Implement Zero-Copy techniques
+ 
 ## Security Considerations
 
 **WARNING:** This tool is designed for authorized security testing only. Unauthorized use of this tool for data exfiltration is illegal and unethical. Always obtain proper authorization before using this tool in any engagement.

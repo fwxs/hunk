@@ -10,6 +10,7 @@ pub struct ExfiltratedFilePortion {
     pub file_name: String,
     pub index: usize,
     pub file_content: Vec<u8>,
+    pub is_last_portion: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -32,16 +33,27 @@ impl ExfiltratedFile {
     }
 
     pub fn get_file_contents(&self) -> Vec<u8> {
-        self.portions.values().cloned().flatten().collect()
+        self.portions
+            .values()
+            .filter_map(|chunk| hex::decode(chunk).ok())
+            .filter_map(|b64_chunk| base64::prelude::BASE64_STANDARD.decode(b64_chunk).ok())
+            .flatten()
+            .collect()
     }
 }
 
 impl ExfiltratedFilePortion {
-    pub fn new(file_name: String, index: usize, file_content: Vec<u8>) -> Self {
+    pub fn new(
+        file_name: String,
+        index: usize,
+        file_content: Vec<u8>,
+        is_last_portion: bool,
+    ) -> Self {
         Self {
             file_content,
             index,
             file_name,
+            is_last_portion,
         }
     }
 }
@@ -73,8 +85,21 @@ impl TryFrom<String> for ExfiltratedFilePortion {
         )?
         .parse::<usize>()?;
 
-        let file_content = payload_iter.collect::<Vec<u8>>();
+        let file_content = payload_iter
+            .by_ref()
+            .map_while(is_not_payload_separator(':' as u8))
+            .collect::<Vec<u8>>();
 
-        Ok(Self::new(file_name, index, file_content))
+        let last_payload = payload_iter
+            .by_ref()
+            .map_while(is_not_payload_separator(':' as u8))
+            .collect::<Vec<u8>>();
+
+        Ok(Self::new(
+            file_name,
+            index,
+            file_content,
+            !last_payload.is_empty(),
+        ))
     }
 }

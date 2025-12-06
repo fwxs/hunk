@@ -66,12 +66,12 @@ impl FileChunk {
     /// The chunk is first formatted as "<file_name>:<index>:<encoded_data>[:end]"
     /// where `:end` is appended when `is_last_chunk` is true. That string is then
     /// base64-encoded and hex-encoded.
-    pub fn encode_chunk(self) -> String {
+    pub fn encode_chunk(&self) -> String {
         b64_hex_encode_string(self.into())
     }
 }
 
-impl Into<String> for FileChunk {
+impl Into<String> for &FileChunk {
     /// Convert the `FileChunk` into a colon-separated string containing the file
     /// name, chunk index, base64-then-hex encoded data and an optional `:end`
     /// suffix for the last chunk.
@@ -152,7 +152,7 @@ fn b64_hex_encode_string(string: String) -> String {
 fn b64_encode_segmented_payload(splitted_payload: Vec<FileChunk>) -> Vec<String> {
     splitted_payload
         .iter()
-        .map(|chunk| b64_hex_encode_string(chunk.encode_data()))
+        .map(FileChunk::encode_chunk)
         .collect()
 }
 

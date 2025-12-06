@@ -7,6 +7,8 @@ edition = "2021"
 actix-web = "4.12.1"
 base64 = "0.22.1"
 clap = { version = "4.5.53", features = ["derive"] }
-env_logger = "0.11.8"
 hex = "0.4.3"
 log = "0.4.28"
+tokio = "1.48.0"
+tracing-actix-web = "0.7.19"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
