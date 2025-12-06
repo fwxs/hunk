@@ -1,22 +1,27 @@
-// TODO! Add error handling
+//! Shelter binary entrypoint and runtime bootstrap.
+//!
+//! This binary exposes a small CLI used to select and configure a server
+//! transport (currently an HTTP server) that accepts encoded file portions
+//! from remote agents, forwards them into an internal queue and lets a
+//! background task assemble and persist the final files.
+//!
+//! The top-level TODOs below identify obvious future improvements such as
+//! providing a configuration file, avoiding CLI/config conflicts and
+//! enabling TLS for network transports.
 // TODO! Add config file
 // TODO! Add parameters which conflicts with config file
 // TODO! Add TLS support
 
-use std::{io::Write, ops::Not};
-
-use actix_web::{web, App, HttpServer};
 use clap::Parser;
-use shelter::ExfiltratedFile;
 use tracing_subscriber::prelude::*;
 
-#[derive(clap::Parser)]
-#[command(version)]
-pub struct Cli {
-    #[arg(long = "http-server", default_value = "127.0.0.1:8080")]
-    pub http_server: std::net::SocketAddr,
-}
-
+/// Application entrypoint.
+///
+/// This function configures logging, creates the tokio mpsc channel used to
+/// transfer parsed `ExfiltratedFilePortion` messages to the background
+/// processor, spawns the background handler and dispatches the selected CLI
+/// subcommand (for example the HTTP server). The function runs inside the
+/// Actix runtime provided by the `#[actix_web::main]` attribute.
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     if std::env::var("RUST_LOG").is_err() {
@@ -28,88 +33,18 @@ async fn main() -> std::io::Result<()> {
         .with(tracing_subscriber::fmt::Layer::default().compact())
         .init();
 
-    let (tx, mut rx): (
+    let (transfer_channel, receiver_channel): (
         tokio::sync::mpsc::Sender<shelter::ExfiltratedFilePortion>,
         tokio::sync::mpsc::Receiver<shelter::ExfiltratedFilePortion>,
     ) = tokio::sync::mpsc::channel(10);
-    let mut files_hashmap: std::collections::HashMap<String, ExfiltratedFile> =
-        std::collections::HashMap::new();
+
+    let cli_args = shelter::commands::base::Cli::parse();
 
     log::info!("Launching waiting queue processor tokio channel...");
-    tokio::spawn(async move {
-        while let Some(file_portion) = rx.recv().await {
-            let file_name = file_portion.file_name.clone();
-            let is_last_portion = file_portion.is_last_portion;
+    tokio::spawn(shelter::event_handler::handle_received_data(
+        receiver_channel,
+        cli_args.loot_directory.clone(),
+    ));
 
-            log::info!(
-                "File {} portion number {} received!",
-                file_portion.file_name,
-                file_portion.index
-            );
-
-            if log::max_level() == log::LevelFilter::Debug {
-                log::debug!(
-                    "Payload data: {}",
-                    String::from_utf8(file_portion.file_content.clone()).unwrap()
-                );
-            }
-
-            if !files_hashmap.contains_key(&file_name) {
-                let mut exfil_file = shelter::ExfiltratedFile::new(file_name.clone());
-                exfil_file.add_portion(file_portion);
-                files_hashmap.insert(file_name.clone(), exfil_file);
-            } else {
-                files_hashmap
-                    .get_mut(&file_name)
-                    .unwrap()
-                    .add_portion(file_portion);
-            }
-
-            if is_last_portion {
-                let loot_directory = std::env::current_dir().unwrap().join("loot");
-                loot_directory.exists().not().then(|| {
-                    log::info!(
-                        "Loot directory not found. Creating at {}",
-                        loot_directory.to_string_lossy()
-                    );
-                    std::fs::create_dir(&loot_directory)
-                });
-                let exfil_file_path = loot_directory.join(&file_name);
-
-                exfil_file_path.exists().not().then(|| {
-                    log::info!("Creating file {}", exfil_file_path.to_string_lossy());
-                    std::fs::File::create_new(&exfil_file_path).unwrap();
-                });
-
-                log::info!(
-                    "Dumping file content in {}",
-                    exfil_file_path.to_string_lossy()
-                );
-                let decoded_data =
-                    String::from_utf8(files_hashmap[&file_name].get_file_contents()).unwrap();
-                std::fs::write(exfil_file_path, decoded_data).unwrap();
-
-                files_hashmap.remove(&file_name);
-            }
-        }
-    });
-
-    let cli_args = Cli::parse();
-    log::info!("Launching shelter application on {}", cli_args.http_server);
-
-    HttpServer::new(move || {
-        App::new()
-            .wrap(tracing_actix_web::TracingLogger::default())
-            .app_data(actix_web::web::Data::new(tx.clone()))
-            .route(
-                "/",
-                web::post()
-                    .guard(actix_web::guard::Header("Content-Type", "text/plain"))
-                    .to(shelter::http::post_handler),
-            )
-    })
-    .workers(1)
-    .bind(&cli_args.http_server)?
-    .run()
-    .await
+    cli_args.handle(transfer_channel).await
 }
