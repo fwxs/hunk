@@ -201,3 +201,7 @@ runner exfil http \
 ## Security Considerations
 
 **WARNING:** This tool is designed for authorized security testing only. Unauthorized use of this tool for data exfiltration is illegal and unethical. Always obtain proper authorization before using this tool in any engagement.
+
+### No Warranty
+
+This software is provided "as is" without warranty of any kind, express or implied. The authors are not liable for any damage, data loss, or legal consequences resulting from its use.
