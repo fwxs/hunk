@@ -19,14 +19,9 @@ use crate::CommandHandler;
 
 /// HTTP-based exfiltration subcommand arguments.
 ///
-/// - `files_path`: list of source files to exfiltrate (comma-separated on CLI).
-/// - `url`: destination HTTP endpoint to POST encoded chunks to.
-/// - `delay`: delay between sending chunks (milliseconds).
-/// - `chunks`: how many logical chunks each file should be split into.
-///
 /// The command reads each file, splits it into `chunks` parts, encodes each
 /// part using the project's canonical base64->hex encoding and sends each
-/// encoded chunk as the text/plain body of an HTTP POST request to `url`.
+/// encoded chunk as the text/plain body of an HTTP POST request to the specified url.
 #[derive(Debug, Clone, Args)]
 #[command(name = "http")]
 pub struct HTTPExfiltrationSubCommand {
@@ -112,19 +107,6 @@ impl From<DNSProtocol> for hickory_resolver::proto::xfer::Protocol {
 }
 
 /// DNS-based exfiltration subcommand arguments.
-///
-/// - `file_path`: the single file to exfiltrate.
-/// - `destination`: the destination domain (used as the target domain of queries).
-/// - `delay`: delay between sending chunks (milliseconds).
-/// - `proto`: whether to use UDP or TCP for DNS transport.
-/// - `nameserver`: optional upstream nameserver to target (e.g. `1.2.3.4:53`).
-///
-/// This command:
-/// 1. Reads the file and produces DNS-safe encoded chunks using the encoder utilities.
-/// 2. Optionally configures a custom resolver that points to `nameserver`.
-/// 3. For each encoded chunk, issues a TXT lookup (via `resolver.txt_lookup`) for
-///    a name constructed by prefixing the chunk to the destination domain.
-/// 4. Sleeps `delay` milliseconds between queries.
 #[derive(Debug, Clone, Args)]
 #[command(name = "dns")]
 pub struct DNSExfiltrationSubCommand {
@@ -135,16 +117,19 @@ pub struct DNSExfiltrationSubCommand {
     #[arg(short = 'd', long = "dest", required = true)]
     destination: String,
 
+    /// Delay between each chunk sent (in milliseconds)
     #[arg(long = "delay", required = false, default_value_t = 500)]
     delay: u32,
 
+    /// DNS transport protocol to use (TCP or UDP)
     #[arg(short='p', long="protocol", required=false, default_value_t=DNSProtocol::UDP, value_enum)]
     proto: DNSProtocol,
 
+    /// Optional DNS nameserver to use for lookups (default: 127.0.0.1:1053)
     #[arg(
         short = 'n',
         long = "nameserver",
-        default_value = Some("127.0.0.1:53"),
+        default_value = Some("127.0.0.1:1053"),
         required = false
     )]
     nameserver: Option<std::net::SocketAddr>,
