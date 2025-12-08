@@ -6,4 +6,5 @@
 //! method that starts the server and forwards parsed `ExfiltratedFilePortion`
 //! messages into the provided processing channel.
 pub mod base;
+pub mod dns;
 pub mod http;

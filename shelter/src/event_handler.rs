@@ -1,122 +1,152 @@
-//! Event handler utilities for processing incoming exfiltrated file portions.
-//!
-//! This module provides an async consumer that listens on a tokio mpsc receiver
-//! for `ExfiltratedFilePortion` messages, reassembles file chunks in memory, and
-//! writes completed files into a configured loot directory on disk.
-//!
-//! Notes:
-//! - The implementation is intentionally tolerant to decoding/writing errors and
-//!   will log errors while continuing to process subsequent messages.
-//! - Future improvements could add a dead-letter queue and circuit breaker
-//!   behavior to avoid infinite retries or resource exhaustion.
 // TODO! Add dead-letter queue for unprocessed file portions
 // TODO! Add circuit breaker inside the loop to avoid infinite processing until the system errors are fixed
 
-use std::ops::Not;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-/// Consume a stream of `ExfiltratedFilePortion` messages and persist completed files.
+/// Background event handler that processes exfiltrated file chunks and reconstructs files.
 ///
-/// The function maintains an in-memory map of partially assembled files keyed by
-/// file name. When it receives a portion whose `is_last_portion` flag is true it:
-/// 1. Ensures the configured `loot_directory` exists under the current working directory.
-/// 2. Reconstructs and decodes the bytes for the file.
-/// 3. Writes the decoded file contents to disk.
+/// This async function runs continuously, consuming `Node` instances from the provided
+/// channel. It maintains two primary data structures:
 ///
-/// Parameters:
-/// - `rx`: Receiver for incoming `ExfiltratedFilePortion` messages. The function
-///   runs until the sender side of the channel is closed and all messages are consumed.
-/// - `loot_directory`: Relative directory path (under current working directory)
-///   where recovered files will be stored.
+/// - `root_nodes`: A set of received root metadata nodes (file names + identifiers)
+/// - `file_chunk_nodes`: A map from file_id → BTreeMap of chunks sorted by index
 ///
-/// Behaviour:
-/// - Logs informational events and errors. Errors do not stop processing of the loop.
-/// - Successfully written files are removed from the internal map after persistence.
+/// ## Processing Flow
+///
+/// When a Root node arrives, it is stored for later matching with chunks.
+/// When a FileChunk node arrives, it is inserted into the appropriate index map.
+/// When an End chunk (marked with ChunkType::End) arrives:
+///
+/// 1. The matching RootNode is located by file_identifier
+/// 2. All FileChunk nodes for that file are retrieved and sorted by index
+/// 3. Each chunk's hex-encoded data is decoded to raw bytes
+/// 4. Decoded chunks are concatenated in index order to reconstruct the file
+/// 5. The complete file is written to the loot directory with its original filename
+/// 6. Both root node and file chunks are removed from memory
+///
+/// ## Data Format During Assembly
+///
+/// - Chunks stored in `file_chunk_nodes` have their `data` field as UTF-8 bytes
+/// - During assembly, these UTF-8 bytes are passed to `hex::decode()` producing raw file bytes
+/// - All chunks are concatenated by sorted index to produce the complete file
+/// - Files are written directly to disk without additional encoding
 pub async fn handle_received_data(
-    mut rx: tokio::sync::mpsc::Receiver<crate::ExfiltratedFilePortion>,
+    mut rx: tokio::sync::mpsc::Receiver<crate::Node>,
     loot_directory: String,
 ) {
-    let mut files_hashmap: std::collections::HashMap<String, crate::ExfiltratedFile> =
-        std::collections::HashMap::new();
+    let mut root_nodes: HashSet<crate::RootNode> = HashSet::new();
 
-    while let Some(file_portion) = rx.recv().await {
-        let file_name = file_portion.file_name.clone();
-        let is_last_portion = file_portion.is_last_portion;
+    let mut file_chunk_nodes: HashMap<String, BTreeMap<usize, crate::ThreadSafeFileChunkNode>> =
+        HashMap::new();
 
-        log::info!(
-            "File {} portion number {} received!",
-            file_portion.file_name,
-            file_portion.index
-        );
-
-        if !files_hashmap.contains_key(&file_name) {
-            let mut exfil_file = crate::ExfiltratedFile::new(file_name.clone());
-            exfil_file.add_portion(file_portion);
-            files_hashmap.insert(file_name.clone(), exfil_file);
-        } else {
-            if let Some(exfil_file) = files_hashmap.get_mut(&file_name) {
-                exfil_file.add_portion(file_portion);
+    while let Some(node_received) = rx.recv().await {
+        match node_received {
+            crate::Node::Root(root_node) => {
+                log::info!("Root node {} received!", root_node.file_name);
+                root_nodes.insert(root_node);
             }
-        }
-
-        if is_last_portion {
-            match std::env::current_dir() {
-                Ok(current_dir) => {
-                    log::info!(
-                        "Current working directory: {}",
-                        current_dir.to_string_lossy()
-                    );
-                    let loot_directory = current_dir.join(&loot_directory);
-                    loot_directory.exists().not().then(|| {
-                        log::info!(
-                            "Loot directory not found. Creating at {}",
-                            loot_directory.to_string_lossy()
+            crate::Node::FileChunk(file_chunk_node) => {
+                let ref_file_chunk_node = std::sync::Arc::new(file_chunk_node);
+                log::info!(
+                    "{:?} chunk node index {} for root {} received!",
+                    ref_file_chunk_node.chunk_type,
+                    ref_file_chunk_node.index,
+                    ref_file_chunk_node.root_node_id
+                );
+                if file_chunk_nodes.contains_key(&ref_file_chunk_node.root_node_id) {
+                    if let Some(file_nodes) =
+                        file_chunk_nodes.get_mut(&ref_file_chunk_node.root_node_id)
+                    {
+                        file_nodes.insert(
+                            ref_file_chunk_node.index,
+                            std::sync::Arc::clone(&ref_file_chunk_node),
                         );
-                        std::fs::create_dir(&loot_directory)
+                    }
+                } else {
+                    file_chunk_nodes.insert(ref_file_chunk_node.root_node_id.clone(), {
+                        let mut new_map: BTreeMap<usize, crate::ThreadSafeFileChunkNode> =
+                            BTreeMap::new();
+                        new_map.insert(
+                            ref_file_chunk_node.index,
+                            std::sync::Arc::clone(&ref_file_chunk_node),
+                        );
+                        new_map
                     });
-                    let exfil_file_path = loot_directory.join(&file_name);
+                }
 
-                    exfil_file_path.exists().not().then(|| {
-                        match std::fs::File::create_new(&exfil_file_path) {
-                            Ok(_) => log::info!(
-                                "Created new file at {}",
-                                exfil_file_path.to_string_lossy()
-                            ),
-                            Err(err) => log::error!(
-                                "Error creating file {}: {}",
-                                exfil_file_path.to_string_lossy(),
-                                err
-                            ),
-                        };
-                    });
+                if ref_file_chunk_node.is_last_chunk() {
+                    log::info!(
+                        "End chunk received for root {}. Assembling file...",
+                        ref_file_chunk_node.root_node_id
+                    );
 
-                    if let Some(exfiltrated_file) = files_hashmap.get(&file_name) {
-                        match String::from_utf8(exfiltrated_file.get_file_contents()) {
-                            Ok(decoded_data) => {
-                                match std::fs::write(&exfil_file_path, decoded_data) {
-                                    Ok(_) => log::info!(
-                                        "Dumping file content in {}",
-                                        exfil_file_path.to_string_lossy()
-                                    ),
-                                    Err(err) => log::error!(
-                                        "Error writing to file {}: {}",
-                                        exfil_file_path.to_string_lossy(),
-                                        err
-                                    ),
+                    if let Some(root_node) = root_nodes.take(&ref_file_chunk_node.root_node_id) {
+                        log::info!(
+                            "Root node {} found. Assembling file {}...",
+                            ref_file_chunk_node.root_node_id,
+                            root_node.file_name
+                        );
+                        if let Some(file_nodes) =
+                            file_chunk_nodes.remove(&ref_file_chunk_node.root_node_id)
+                        {
+                            let file_data = file_nodes
+                                .values()
+                                .filter_map(|file_chunk| hex::decode(file_chunk.data.to_vec()).ok())
+                                .flatten()
+                                .collect::<Vec<u8>>();
+
+                            match std::env::current_dir() {
+                                Ok(current_dir) => {
+                                    log::info!(
+                                        "Current working directory: {}",
+                                        current_dir.to_string_lossy()
+                                    );
+                                    let loot_directory = current_dir.join(&loot_directory);
+                                    if !loot_directory.exists() {
+                                        log::info!(
+                                            "Loot directory not found. Creating at {}",
+                                            loot_directory.to_string_lossy()
+                                        );
+                                        if let Err(err) = std::fs::create_dir(&loot_directory) {
+                                            log::error!(
+                                                "Error creating loot directory {}: {}",
+                                                loot_directory.to_string_lossy(),
+                                                err
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                    let exfil_file_path = loot_directory.join(&root_node.file_name);
+
+                                    match std::fs::write(&exfil_file_path, file_data) {
+                                        Ok(_) => log::info!(
+                                            "Dumping file content in {}",
+                                            exfil_file_path.to_string_lossy()
+                                        ),
+                                        Err(err) => log::error!(
+                                            "Error writing to file {}: {}",
+                                            exfil_file_path.to_string_lossy(),
+                                            err
+                                        ),
+                                    }
+                                }
+                                Err(err) => {
+                                    log::error!("Error getting current working directory: {}", err)
                                 }
                             }
-                            Err(err) => {
-                                log::error!(
-                                    "Error decoding file contents for {}: {}",
-                                    file_name,
-                                    err
-                                )
-                            }
+                        } else {
+                            log::warn!(
+                                "No file chunks found for root node {}. Cannot assemble file.",
+                                ref_file_chunk_node.root_node_id
+                            );
                         }
+                    } else {
+                        log::warn!(
+                            "Root node {} not found. Cannot assemble file.",
+                            ref_file_chunk_node.root_node_id
+                        );
                     }
-
-                    files_hashmap.remove(&file_name);
                 }
-                Err(err) => log::error!("Error getting current working directory: {}", err),
             }
         }
     }

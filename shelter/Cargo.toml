@@ -5,10 +5,13 @@ edition = "2021"
 
 [dependencies]
 actix-web = "4.12.1"
-base64 = "0.22.1"
-clap = { version = "4.5.53", features = ["derive"] }
-hex = "0.4.3"
-log = "0.4.28"
-tokio = "1.48.0"
+async-trait = "0.1.89"
+base64.workspace = true
+clap.workspace = true
+hex.workspace = true
+hickory-resolver.workspace = true
+hickory-server = "0.25.2"
+log.workspace = true
+tokio.workspace = true
 tracing-actix-web = "0.7.19"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }

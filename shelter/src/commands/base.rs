@@ -23,10 +23,11 @@ impl Cli {
     /// `ExfiltratedFilePortion` messages to the background processor.
     pub async fn handle(
         self,
-        transfer_channel: tokio::sync::mpsc::Sender<crate::ExfiltratedFilePortion>,
+        transfer_channel: tokio::sync::mpsc::Sender<crate::Node>,
     ) -> std::io::Result<()> {
         match self.server_type {
             ServerType::HTTP(http_sub_cmd) => http_sub_cmd.handle(transfer_channel).await,
+            ServerType::DNS(dns_sub_cmd) => dns_sub_cmd.handle(transfer_channel).await,
         }
     }
 }
@@ -36,4 +37,8 @@ pub enum ServerType {
     /// Launch an HTTP server to receive exfiltrated files.
     #[command(name = "http-server")]
     HTTP(super::http::HTTPServerTypeSubCommand),
+
+    /// Launch a DNS server to receive exfiltrated files.
+    #[command(name = "dns-server")]
+    DNS(super::dns::DNSServerTypeSubCommand),
 }
