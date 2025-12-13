@@ -15,7 +15,8 @@
 //! - Encoding utilities are intentionally kept separate from command implementations
 //!   so they can be reused and tested independently.
 pub mod commands;
-pub mod encoder;
+pub mod encoders;
+pub mod nodes;
 
 /// A thin abstraction implemented by CLI command structs to execute work.
 ///
