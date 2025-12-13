@@ -202,14 +202,13 @@ impl TryFrom<String> for Node {
     type Error = crate::error::app::AppError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        // Decode payload: Hex(UTF-8(Base64(Colon-delimited-fields)))
-        // Step 1: Hex decode the input string
+        let b64_engine = base64::engine::GeneralPurpose::new(
+            &base64::alphabet::STANDARD,
+            base64::engine::general_purpose::NO_PAD,
+        );
         let hex_decoded = hex::decode(value)?;
-        // Step 2: Base64 decode the hex result
-        let base64_decoded = base64::prelude::BASE64_STANDARD.decode(hex_decoded)?;
-        // Step 3: Convert bytes to UTF-8 string
+        let base64_decoded = b64_engine.decode(hex_decoded)?;
         let decoded_payload = String::from_utf8(base64_decoded)?;
-        // Step 4: Split on colon delimiters
         let mut decoded_payload = decoded_payload.split(':').into_iter();
 
         if let Some(node_type) = decoded_payload.next() {
