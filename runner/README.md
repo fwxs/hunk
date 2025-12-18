@@ -209,10 +209,11 @@ runner exfil http \
 - [x] **Payload chunks identification** - Implement IDs for each payload chunk for better tracking
 - [x] **Add error handling** - Robust error handling for file I/O and network operations
 - [x] **Add Logging Options** - Structured logging for operational tracking and debugging
-- [ ] **Add Compression Options** - Implement gzip/zlib compression before encoding to reduce payload size
 - [ ] **Add Encryption Options** - Implement ChaCha20 encryption for payload confidentiality
   - [ ] **Key Management options** - Support key files, keys command argument or remote key retrieval
 - [ ] **Add Retry Mechanisms** - Automatic retry on transmission failures with exponential backoff
+- [ ] **Add Shuffle Option** - Randomize chunk transmission order to evade pattern detection
+- [ ] **Add Random delay** - Introduce random in delay intervals between payload chunks
 
 ### Medium Priority
 - [ ] **Add Different Exfiltration Methods**:
@@ -221,9 +222,8 @@ runner exfil http \
   - [ ] FTP/SFTP
   - [ ] WebSocket channels
   - [ ] Cloud storage APIs (S3, GCS, Azure Blob)
-- [ ] **Add Shuffle Option** - Randomize chunk transmission order to evade pattern detection
-- [ ] **Add Random delay** - Introduce random in delay intervals between payload chunks
 - [ ] **Add Progress Indicators** - Real-time progress bars and transmission statistics
+- [ ] **Add Compression Options** - Implement gzip/zlib compression before encoding to reduce payload size
 
 ### Low Priority
 - [ ] Add steganography support (hide data in images/audio)
