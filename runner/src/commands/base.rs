@@ -16,14 +16,6 @@
 //! - Additional exfiltration methods and scheduling support
 //! - Logging, retry and progress indicator options
 
-// TODO: Add Compression options
-// TODO: Add Encryption options
-// TODO: Add different Exfiltration methods
-// TODO: Add scheduling support
-// TODO: Add logging options
-// TODO: Add retry mechanisms
-// TODO: Add progress indicators
-
 use crate::CommandHandler;
 use clap::{Parser, Subcommand};
 
@@ -46,8 +38,8 @@ impl Cli {
     ///
     /// This consumes the `Cli` instance and delegates to the underlying
     /// `Operations::handle` implementation.
-    pub fn handle(self) {
-        self.operation_type.handle();
+    pub fn handle(self) -> crate::error::Result<()> {
+        self.operation_type.handle()
     }
 }
 
@@ -68,9 +60,11 @@ impl CommandHandler for Operations {
     ///
     /// The method consumes the `Operations` enum and passes control to the
     /// concrete command handler for the selected variant.
-    fn handle(self) {
+    fn handle(self) -> crate::error::Result<()> {
         match self {
-            Operations::Exfiltration(exfil_sub_cmd_args) => exfil_sub_cmd_args.handle(),
-        }
+            Operations::Exfiltration(exfil_sub_cmd_args) => exfil_sub_cmd_args.handle()?,
+        };
+
+        Ok(())
     }
 }

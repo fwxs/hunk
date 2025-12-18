@@ -207,30 +207,26 @@ runner exfil http \
 
 ### High Priority
 - [x] **Payload chunks identification** - Implement IDs for each payload chunk for better tracking
-- [ ] **Add error handling** - Robust error handling for file I/O and network operations
-- [ ] **Add Compression Options** - Implement gzip/zlib compression before encoding to reduce payload size
-- [ ] **Add Encryption Options** - Implement AES/ChaCha20 encryption for payload confidentiality
+- [x] **Add error handling** - Robust error handling for file I/O and network operations
 - [ ] **Add Logging Options** - Structured logging for operational tracking and debugging
+- [ ] **Add Compression Options** - Implement gzip/zlib compression before encoding to reduce payload size
+- [ ] **Add Encryption Options** - Implement ChaCha20 encryption for payload confidentiality
+  - [ ] **Key Management options** - Support key files, keys command argument or remote key retrieval
 - [ ] **Add Retry Mechanisms** - Automatic retry on transmission failures with exponential backoff
-- [ ] **Add Progress Indicators** - Real-time progress bars and transmission statistics
 
 ### Medium Priority
 - [ ] **Add Different Exfiltration Methods**:
-  - ICMP tunneling (ping exfiltration)
-  - SMTP (email-based exfiltration)
-  - FTP/SFTP
-  - WebSocket channels
-  - Cloud storage APIs (S3, GCS, Azure Blob)
-- [ ] **Add Scheduling Support** - Cron-like scheduling for timed exfiltration
+  - [ ] ICMP tunneling (ping exfiltration)
+  - [ ] SMTP (email-based exfiltration)
+  - [ ] FTP/SFTP
+  - [ ] WebSocket channels
+  - [ ] Cloud storage APIs (S3, GCS, Azure Blob)
 - [ ] **Add Shuffle Option** - Randomize chunk transmission order to evade pattern detection
 - [ ] **Add Random delay** - Introduce random in delay intervals between payload chunks
+- [ ] **Add Progress Indicators** - Real-time progress bars and transmission statistics
 
 ### Low Priority
 - [ ] Add steganography support (hide data in images/audio)
-- [ ] Add multi-threaded transmission
-- [ ] Add bandwidth throttling options
-- [ ] Add custom header support for HTTP exfiltration
-- [ ] Add authentication mechanisms (API keys, OAuth tokens)
 - [ ] Add exfiltration via social media platforms (Discord, Telegram bots)
 - [ ] Add exfiltration via file sharing services (Dropbox, Google Drive)
 - [ ] Implement Zero-Copy techniques

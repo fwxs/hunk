@@ -58,14 +58,14 @@ pub fn encode_b64_hex(string: String) -> String {
 /// # Returns
 /// A vector of bytes containing the complete unmodified file contents.
 ///
-/// # Panics
-/// Panics if the file cannot be opened or if the read operation fails.
-pub fn buffered_read_file(filepath: &PathBuf) -> Vec<u8> {
-    let mut opened_file = std::fs::File::open(filepath).unwrap();
+/// # Errors
+/// Returns an error if the file cannot be opened or read.
+pub fn buffered_read_file(filepath: &PathBuf) -> super::error::Result<Vec<u8>> {
+    let mut opened_file = std::fs::File::open(filepath)?;
     let mut file_buffer: Vec<u8> = Vec::new();
-    opened_file.read_to_end(&mut file_buffer).unwrap();
+    opened_file.read_to_end(&mut file_buffer)?;
 
-    file_buffer
+    Ok(file_buffer)
 }
 
 /// Calculates the size of raw data from its base64-encoded size.

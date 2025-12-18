@@ -1,14 +1,13 @@
-use std::path::PathBuf;
-
-use crate::nodes::{file_chunk::FileChunkNode, root::RootNode, Node};
-
-use super::{buffered_read_file, encode_b64_hex};
-
 /// HTTP-based file exfiltration encoder module.
 ///
 /// This module provides functionality to split files into fixed-size chunks suitable for
 /// HTTP-based data exfiltration during red team engagements. Each chunk is encoded with
 /// base64 and hex to ensure compatibility with HTTP transmission protocols.
+use std::path::PathBuf;
+
+use crate::nodes::{file_chunk::FileChunkNode, root::RootNode, Node};
+
+use super::{buffered_read_file, encode_b64_hex};
 
 /// Encodes a file using base64 and hex encoding with a fixed number of chunks.
 ///
@@ -25,13 +24,13 @@ use super::{buffered_read_file, encode_b64_hex};
 /// A vector of base64+hex encoded strings, one per node (including the root node).
 /// Each string represents an encoded node ready for HTTP exfiltration.
 ///
-/// # Panics
-/// Panics if the file cannot be read or if the filename cannot be extracted from the path.
-pub fn b64_encode_file(filepath: &PathBuf, chunks: usize) -> Vec<String> {
-    let root_node = RootNode::try_from(filepath).unwrap();
+/// # Errors
+/// Returns an error if the file cannot be read or if node creation fails.
+pub fn b64_encode_file(filepath: &PathBuf, chunks: usize) -> crate::error::Result<Vec<String>> {
+    let root_node = RootNode::try_from(filepath)?;
     let ref_root_identifier = std::rc::Rc::clone(&root_node.file_identifier);
     let mut nodes = vec![Node::Root(root_node)];
-    let file_content = buffered_read_file(filepath);
+    let file_content = buffered_read_file(filepath)?;
 
     nodes.extend(
         file_content
@@ -52,8 +51,8 @@ pub fn b64_encode_file(filepath: &PathBuf, chunks: usize) -> Vec<String> {
         }
     });
 
-    nodes
+    Ok(nodes
         .iter()
         .map(|node| encode_b64_hex(node.to_string()))
-        .collect()
+        .collect())
 }

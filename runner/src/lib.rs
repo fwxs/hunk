@@ -5,6 +5,9 @@
 //!   exfiltration flows (HTTP, DNS, etc.).
 //! - The `encoder` module provides utilities for encoding and chunking file payloads
 //!   (base64 -> hex encoding, DNS-safe splitting, etc.).
+//! - The `nodes` module contains abstractions for different types of C2 nodes
+//!  (HTTP servers, DNS servers, etc.) and utilities for interacting with them.
+//! - The `error` module defines error types used across the library.
 //!
 //! The library exposes a small `CommandHandler` trait which CLI types implement to
 //! perform their respective operation when invoked by the CLI entrypoint.
@@ -16,6 +19,7 @@
 //!   so they can be reused and tested independently.
 pub mod commands;
 pub mod encoders;
+pub mod error;
 pub mod nodes;
 
 /// A thin abstraction implemented by CLI command structs to execute work.
@@ -29,5 +33,5 @@ pub mod nodes;
 /// - Constructed by the `clap`-generated CLI parser and then dispatched from `main`.
 pub trait CommandHandler {
     /// Execute the command, consuming the implementor.
-    fn handle(self);
+    fn handle(self) -> crate::error::Result<()>;
 }

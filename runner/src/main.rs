@@ -41,7 +41,7 @@
 
 use clap::Parser;
 
-fn main() {
+fn main() -> runner::error::Result<()> {
     // Parse command-line arguments and execute the selected operation.
-    runner::commands::base::Cli::parse().handle();
+    runner::commands::base::Cli::parse().handle()
 }

