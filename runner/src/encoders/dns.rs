@@ -107,7 +107,7 @@ fn split_file_dns_safe(
         index += 1;
     }
 
-    println!("Total chunks created: {}", index - 1);
+    log::info!("Total chunks created: {}", index - 1);
 
     nodes.last_mut().map(|last_node| {
         if let Node::FileChunk(chunk_node) = last_node {

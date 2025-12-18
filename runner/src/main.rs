@@ -40,8 +40,25 @@
 //! configuration options and available subcommands.
 
 use clap::Parser;
+use std::io::Write;
 
 fn main() -> runner::error::Result<()> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_target(false)
+        .format_timestamp_secs()
+        .format(|buf, record| {
+            let local_time = chrono::Local::now();
+
+            writeln!(
+                buf,
+                "[{}] [{}]: {}",
+                local_time.format("%Y-%m-%dT%H:%M:%S %Z"),
+                record.level(),
+                record.args()
+            )
+        })
+        .init();
+
     // Parse command-line arguments and execute the selected operation.
     runner::commands::base::Cli::parse().handle()
 }

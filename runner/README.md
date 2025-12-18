@@ -208,7 +208,7 @@ runner exfil http \
 ### High Priority
 - [x] **Payload chunks identification** - Implement IDs for each payload chunk for better tracking
 - [x] **Add error handling** - Robust error handling for file I/O and network operations
-- [ ] **Add Logging Options** - Structured logging for operational tracking and debugging
+- [x] **Add Logging Options** - Structured logging for operational tracking and debugging
 - [ ] **Add Compression Options** - Implement gzip/zlib compression before encoding to reduce payload size
 - [ ] **Add Encryption Options** - Implement ChaCha20 encryption for payload confidentiality
   - [ ] **Key Management options** - Support key files, keys command argument or remote key retrieval
