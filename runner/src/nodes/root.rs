@@ -117,7 +117,7 @@ impl std::fmt::Display for RootNode {
             "{}:{}:{}",
             self.node_type(),
             self.file_name,
-            hex::encode(&*self.file_identifier)
+            hex::encode(*self.file_identifier)
         )
     }
 }

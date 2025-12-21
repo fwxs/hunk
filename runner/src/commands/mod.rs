@@ -1,3 +1,3 @@
 //! Module for command implementations.
 pub mod base;
-pub(self) mod exfiltrate;
+pub mod exfiltrate;

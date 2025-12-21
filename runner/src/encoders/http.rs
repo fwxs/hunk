@@ -19,11 +19,9 @@ pub fn build_chunk_nodes(
             }),
     );
 
-    nodes.last_mut().map(|last_node| {
-        if let Node::FileChunk(chunk_node) = last_node {
-            chunk_node.set_last_chunk();
-        }
-    });
+    if let Some(Node::FileChunk(chunk_node)) = nodes.last_mut() {
+        chunk_node.set_last_chunk();
+    };
 
     Ok(nodes)
 }

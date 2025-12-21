@@ -67,7 +67,7 @@ impl FileChunkNode {
     /// A new FileChunkNode instance.
     pub fn new(root_node_id: std::rc::Rc<[u8; 4]>, index: usize, data: Vec<u8>) -> Self {
         Self {
-            root_node_id: hex::encode(&*root_node_id),
+            root_node_id: hex::encode(*root_node_id),
             index,
             data: hex::encode(data),
             chunk_type: ChunkType::File,
@@ -108,7 +108,7 @@ impl FileChunkNode {
     /// # Returns
     /// Self for fluent API usage.
     pub fn set_raw_root_node_id(mut self, root_node_id: std::rc::Rc<[u8; 4]>) -> Self {
-        self.root_node_id = hex::encode(&*root_node_id);
+        self.root_node_id = hex::encode(*root_node_id);
 
         self
     }

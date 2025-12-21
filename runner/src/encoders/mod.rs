@@ -19,7 +19,7 @@ use base64::Engine;
 /// # Returns
 /// The approximate size in bytes of the decoded (raw) chunk.
 pub fn base64_ratio(payload_length: usize) -> usize {
-    ((((4.0 * payload_length as f32) + 2.0) / 3.0) as f32).floor() as usize
+    (((4.0 * payload_length as f32) + 2.0) / 3.0).floor() as usize
 }
 
 /// Double-encodes a string using base64 then hex encoding.

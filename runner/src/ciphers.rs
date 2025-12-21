@@ -35,7 +35,7 @@ pub fn chacha20_encrypt(
             ))
         }
     };
-    let cipher = chacha20poly1305::ChaCha20Poly1305::new(&key);
+    let cipher = chacha20poly1305::ChaCha20Poly1305::new(key);
 
     Ok(cipher.encrypt(nonce, plaintext.as_ref())?)
 }

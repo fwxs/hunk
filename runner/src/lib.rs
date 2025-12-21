@@ -6,7 +6,7 @@
 //! - The `encoder` module provides utilities for encoding and chunking file payloads
 //!   (base64 -> hex encoding, DNS-safe splitting, etc.).
 //! - The `nodes` module contains abstractions for different types of C2 nodes
-//!  (HTTP servers, DNS servers, etc.) and utilities for interacting with them.
+//!    (HTTP servers, DNS servers, etc.) and utilities for interacting with them.
 //! - The `error` module defines error types used across the library.
 //! - The `ciphers` module provides encryption utilities (e.g., ChaCha20-Poly1305)
 //!
