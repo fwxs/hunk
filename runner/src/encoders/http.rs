@@ -1,40 +1,14 @@
-/// HTTP-based file exfiltration encoder module.
-///
-/// This module provides functionality to split files into fixed-size chunks suitable for
-/// HTTP-based data exfiltration during red team engagements. Each chunk is encoded with
-/// base64 and hex to ensure compatibility with HTTP transmission protocols.
-use std::path::PathBuf;
+use crate::nodes::{file_chunk::FileChunkNode, Node};
 
-use crate::nodes::{file_chunk::FileChunkNode, root::RootNode, Node};
-
-use super::{buffered_read_file, encode_b64_hex};
-
-/// Encodes a file using base64 and hex encoding with a fixed number of chunks.
-///
-/// Splits the input file into the specified number of equal-sized chunks, creates a root
-/// metadata node followed by file chunk nodes, and encodes each node with double encoding
-/// (base64 then hex) for HTTP transmission. The final chunk is marked as the end chunk.
-///
-/// # Arguments
-/// * `filepath` - Path to the file to be exfiltrated.
-/// * `chunks` - The number of chunks to divide the file into. The file is split such that
-///   each chunk contains approximately equal amounts of data.
-///
-/// # Returns
-/// A vector of base64+hex encoded strings, one per node (including the root node).
-/// Each string represents an encoded node ready for HTTP exfiltration.
-///
-/// # Errors
-/// Returns an error if the file cannot be read or if node creation fails.
-pub fn b64_encode_file(filepath: &PathBuf, chunks: usize) -> crate::error::Result<Vec<String>> {
-    let root_node = RootNode::try_from(filepath)?;
-    let ref_root_identifier = std::rc::Rc::clone(&root_node.file_identifier);
-    let mut nodes = vec![Node::Root(root_node)];
-    let file_content = buffered_read_file(filepath)?;
-
+pub fn build_chunk_nodes(
+    ref_root_identifier: std::rc::Rc<[u8; 4]>,
+    bytes: Vec<u8>,
+    chunks: usize,
+) -> crate::error::Result<Vec<Node>> {
+    let mut nodes = Vec::new();
     nodes.extend(
-        file_content
-            .chunks(file_content.len().div_ceil(chunks))
+        bytes
+            .chunks(bytes.len().div_ceil(chunks))
             .enumerate()
             .map(|(index, chunk)| {
                 Node::FileChunk(FileChunkNode::new(
@@ -51,8 +25,12 @@ pub fn b64_encode_file(filepath: &PathBuf, chunks: usize) -> crate::error::Resul
         }
     });
 
-    Ok(nodes
-        .iter()
-        .map(|node| encode_b64_hex(node.to_string()))
-        .collect())
+    Ok(nodes)
+}
+
+pub fn encode_file_chunks_to_hex_b64(nodes: Vec<Node>) -> Vec<String> {
+    nodes
+        .into_iter()
+        .map(|node| crate::encoders::encode_b64_hex(node.to_string()))
+        .collect()
 }

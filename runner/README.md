@@ -209,7 +209,7 @@ runner exfil http \
 - [x] **Payload chunks identification** - Implement IDs for each payload chunk for better tracking
 - [x] **Add error handling** - Robust error handling for file I/O and network operations
 - [x] **Add Logging Options** - Structured logging for operational tracking and debugging
-- [ ] **Add Encryption Options** - Implement ChaCha20 encryption for payload confidentiality
+- [x] **Add Encryption Options** - Implement ChaCha20 encryption for payload confidentiality
   - [ ] **Key Management options** - Support key files, keys command argument or remote key retrieval
 - [ ] **Add Retry Mechanisms** - Automatic retry on transmission failures with exponential backoff
 - [ ] **Add Shuffle Option** - Randomize chunk transmission order to evade pattern detection

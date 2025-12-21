@@ -31,6 +31,13 @@ pub struct DNSErrorStruct {
     msg: String,
 }
 
+/// Struct to represent ChaCha20 errors.
+#[derive(Debug)]
+pub struct ChaCha20ErrorStruct {
+    /// The error message.
+    msg: String,
+}
+
 /// Enum to represent different types of runner errors.
 #[derive(Debug)]
 pub enum RunnerError {
@@ -38,6 +45,7 @@ pub enum RunnerError {
     ValidationError(ValidationErrorStruct),
     RequestError(RequestErrorStruct),
     DNSError(DNSErrorStruct),
+    ChaCha20Error(ChaCha20ErrorStruct),
 }
 
 impl RunnerError {
@@ -50,6 +58,19 @@ impl RunnerError {
     /// A `RunnerError` instance representing a validation error.
     pub fn validation_error(msg: &str) -> Self {
         RunnerError::ValidationError(ValidationErrorStruct {
+            msg: msg.to_string(),
+        })
+    }
+
+    /// Create a new ChaCha20 error.
+    ///
+    /// # Arguments
+    ///
+    /// * `msg` - The error message.
+    /// # Returns
+    /// A `RunnerError` instance representing a ChaCha20 error.
+    pub fn chacha20_error(msg: &str) -> Self {
+        RunnerError::ChaCha20Error(ChaCha20ErrorStruct {
             msg: msg.to_string(),
         })
     }
@@ -69,6 +90,9 @@ impl std::fmt::Display for RunnerError {
             }
             RunnerError::DNSError(dns_err) => {
                 write!(f, "DNS Error: {}", dns_err.msg)
+            }
+            RunnerError::ChaCha20Error(key_err) => {
+                write!(f, "ChaCha20 Key Error: {}", key_err.msg)
             }
         }
     }
@@ -94,6 +118,14 @@ impl From<reqwest::Error> for RunnerError {
 impl From<hickory_resolver::ResolveError> for RunnerError {
     fn from(error: hickory_resolver::ResolveError) -> Self {
         RunnerError::DNSError(DNSErrorStruct {
+            msg: error.to_string(),
+        })
+    }
+}
+
+impl From<chacha20poly1305::Error> for RunnerError {
+    fn from(error: chacha20poly1305::Error) -> Self {
+        RunnerError::ChaCha20Error(ChaCha20ErrorStruct {
             msg: error.to_string(),
         })
     }

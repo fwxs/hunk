@@ -8,6 +8,7 @@
 //! - The `nodes` module contains abstractions for different types of C2 nodes
 //!  (HTTP servers, DNS servers, etc.) and utilities for interacting with them.
 //! - The `error` module defines error types used across the library.
+//! - The `ciphers` module provides encryption utilities (e.g., ChaCha20-Poly1305)
 //!
 //! The library exposes a small `CommandHandler` trait which CLI types implement to
 //! perform their respective operation when invoked by the CLI entrypoint.
@@ -17,6 +18,7 @@
 //!   struct so implementations can move resources (paths, network clients) without cloning.
 //! - Encoding utilities are intentionally kept separate from command implementations
 //!   so they can be reused and tested independently.
+pub mod ciphers;
 pub mod commands;
 pub mod encoders;
 pub mod error;
