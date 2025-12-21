@@ -655,6 +655,8 @@ Shelter uses a **producer-consumer** pattern:
 
 ### High Priority
 
+- [ ] **Encryption Support**: Implement ChaCha20 encryption/decryption for payload confidentiality
+  - [ ] **Key Management**: Support key files, command-line keys, or remote key retrieval
 - [ ] **Configuration File Support**: Implement `.toml` or `.json` configuration file parsing with clear precedence rules (CLI args > config file > defaults)
 - [ ] **Dead-Letter Queue (DLQ)**: Create a persistent or in-memory queue for file portions that fail parsing/channel send to prevent silent data loss
 - [ ] **Circuit Breaker Pattern**: Implement circuit breaker in event_handler loop to prevent infinite retries on persistent failures (e.g., disk full, permission denied)
@@ -677,9 +679,6 @@ Shelter uses a **producer-consumer** pattern:
   - Channel capacity utilization
   - Assembly latency percentiles
 - [ ] **Metrics Dashboard**: Grafana dashboard for real-time monitoring of exfiltration progress
-
-### Medium Priority (Continued)
-
 - [ ] **Resume Capability**: Persist metadata of received chunks to allow resumption of interrupted transfers (graceful recovery)
 - [ ] **Batch Processing**: Support receiving multiple files in parallel with configurable concurrency limits to prevent memory exhaustion
 - [ ] **Compression Support**: Add optional gzip/deflate decompression for payload optimization and reduced network footprint

