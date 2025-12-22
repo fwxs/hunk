@@ -74,6 +74,10 @@ impl RunnerError {
             msg: msg.to_string(),
         })
     }
+
+    pub fn request_error(msg: String) -> Self {
+        RunnerError::RequestError(RequestErrorStruct { msg })
+    }
 }
 
 impl std::fmt::Display for RunnerError {

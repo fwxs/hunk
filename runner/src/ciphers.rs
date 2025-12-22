@@ -2,7 +2,7 @@ use chacha20poly1305::aead::{Aead, KeyInit};
 
 /// Encrypts the given plaintext using ChaCha20-Poly1305 with the provided key and nonce.
 /// # Arguments
-/// * `key_slice` - A string slice representing the encryption key (must be 32 bytes).
+/// * `key_slice` - A bytes slice representing the encryption key (must be 32 bytes).
 /// * `nonce_slice` - A byte array slice representing the nonce (must be 12 bytes).
 /// * `plaintext` - A vector of bytes representing the plaintext to be encrypted.
 ///
@@ -12,13 +12,11 @@ use chacha20poly1305::aead::{Aead, KeyInit};
 /// # Errors
 /// * Returns an error if either key or nonce length are invalid or if encryption fails.
 pub fn chacha20_encrypt(
-    key_slice: &str,
+    key_slice: Vec<u8>,
     nonce_slice: &[u8],
     plaintext: Vec<u8>,
 ) -> crate::error::Result<Vec<u8>> {
-    let key = match std::panic::catch_unwind(|| {
-        chacha20poly1305::Key::from_slice(key_slice.as_bytes())
-    }) {
+    let key = match std::panic::catch_unwind(|| chacha20poly1305::Key::from_slice(&key_slice)) {
         Ok(key) => key,
         Err(_) => {
             return Err(crate::error::RunnerError::chacha20_error(
