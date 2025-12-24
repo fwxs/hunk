@@ -13,6 +13,6 @@ hex.workspace = true
 hickory-resolver.workspace = true
 log.workspace = true
 reqwest.workspace = true
-shellexpand = "3.1.1"
+shellexpand.workspace = true
 tokio.workspace = true
 urandom = "0.2.2"

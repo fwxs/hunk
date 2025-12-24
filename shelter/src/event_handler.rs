@@ -39,7 +39,7 @@ use crate::nodes::{root::RootNode, Node, ThreadSafeFileChunkNode};
 /// - Files are written directly to disk without additional encoding
 pub async fn handle_received_data(
     mut rx: tokio::sync::mpsc::Receiver<crate::nodes::Node>,
-    loot_directory: String,
+    additional_args: crate::commands::base::AdditionalArgs,
 ) {
     let mut root_nodes: HashSet<RootNode> = HashSet::new();
     let mut file_chunk_nodes: HashMap<String, BTreeMap<usize, ThreadSafeFileChunkNode>> =
@@ -62,12 +62,22 @@ pub async fn handle_received_data(
                 insert_chunk_into_map(&ref_file_chunk_node, &mut file_chunk_nodes);
 
                 if ref_file_chunk_node.is_last_chunk() {
-                    process_end_chunk(
+                    match process_end_chunk(
                         &ref_file_chunk_node,
                         &mut root_nodes,
                         &mut file_chunk_nodes,
-                        &loot_directory,
-                    );
+                        &additional_args,
+                    ) {
+                        Ok(_) => log::info!(
+                            "File assembly and processing for root {} completed.",
+                            ref_file_chunk_node.root_node_id
+                        ),
+                        Err(err) => log::error!(
+                            "Error processing end chunk for root {}: {}",
+                            ref_file_chunk_node.root_node_id,
+                            err
+                        ),
+                    }
                 }
             }
         }
@@ -131,8 +141,8 @@ fn process_end_chunk(
     file_chunk_node: &ThreadSafeFileChunkNode,
     root_nodes: &mut HashSet<RootNode>,
     file_chunk_nodes: &mut HashMap<String, BTreeMap<usize, ThreadSafeFileChunkNode>>,
-    loot_directory: &str,
-) {
+    additional_args: &crate::commands::base::AdditionalArgs,
+) -> crate::error::app::Result<()> {
     log::info!(
         "End chunk received for root {}. Assembling file...",
         file_chunk_node.root_node_id
@@ -147,8 +157,8 @@ fn process_end_chunk(
 
         if let Some(file_nodes) = file_chunk_nodes.remove(&file_chunk_node.root_node_id) {
             let mut file_data = assemble_file_data(&file_nodes);
-            apply_metadata_transformations(&mut file_data, &root_node);
-            save_file_to_disk(&root_node, &file_data, loot_directory);
+            apply_metadata_transformations(&mut file_data, &root_node, &additional_args)?;
+            save_file_to_disk(&root_node, &file_data, &additional_args.loot_directory);
         } else {
             log::warn!(
                 "No file chunks found for root node {}. Cannot assemble file.",
@@ -161,6 +171,8 @@ fn process_end_chunk(
             file_chunk_node.root_node_id
         );
     }
+
+    Ok(())
 }
 
 /// Assembles the complete file data from the provided file chunk nodes.
@@ -185,10 +197,15 @@ fn assemble_file_data(file_nodes: &BTreeMap<usize, ThreadSafeFileChunkNode>) -> 
 ///
 /// * `file_data` - A mutable reference to the vector of bytes representing the file data.
 /// * `root_node` - A reference to the RootNode containing metadata information.
+/// * `additional_args` - A reference to AdditionalArgs containing any extra parameters.
 ///
 /// This function checks for any additional metadata in the RootNode and applies
 /// the corresponding transformations to the file data.
-fn apply_metadata_transformations(file_data: &mut Vec<u8>, root_node: &RootNode) {
+fn apply_metadata_transformations(
+    file_data: &mut Vec<u8>,
+    root_node: &RootNode,
+    additional_args: &crate::commands::base::AdditionalArgs,
+) -> crate::error::app::Result<()> {
     if let Some(metadata_list) = &root_node.additional_metadata {
         log::info!(
             "Additional metadata for file {}: {:?}",
@@ -199,34 +216,64 @@ fn apply_metadata_transformations(file_data: &mut Vec<u8>, root_node: &RootNode)
         for metadata in metadata_list {
             match metadata {
                 crate::nodes::root::PayloadMetadata::Encrypted(enc_type) => {
-                    apply_decryption(file_data, enc_type, root_node);
+                    apply_decryption(file_data, enc_type, root_node, &additional_args)?;
                 }
             }
         }
     }
+
+    Ok(())
 }
 
 /// Applies decryption to the file data based on the specified encryption type.
+///
 /// # Arguments
 /// * `file_data` - A mutable reference to the vector of bytes representing the file data.
 /// * `enc_type` - A reference to the EncryptionType indicating the type of encryption used.
 /// * `root_node` - A reference to the RootNode containing metadata information.
+/// * `additional_args` - A reference to AdditionalArgs containing any extra parameters.
 ///
 /// This function matches the encryption type and calls the appropriate decryption method.
 fn apply_decryption(
     file_data: &mut Vec<u8>,
     enc_type: &crate::nodes::root::EncryptionType,
     root_node: &RootNode,
-) {
+    additional_args: &crate::commands::base::AdditionalArgs,
+) -> crate::error::app::Result<()> {
     match enc_type {
         crate::nodes::root::EncryptionType::String => {
-            todo!("String decryption key not implemented yet");
+            match additional_args.cipher_key_string.as_deref() {
+                Some(key) => decrypt_with_string_key(file_data, &key, root_node),
+                None => {
+                    log::error!(
+                        "No cipher key string provided for decrypting file {}",
+                        root_node.file_name
+                    );
+                    Ok(())
+                }
+            }
         }
-        crate::nodes::root::EncryptionType::File => {
-            todo!("File decryption not implemented yet")
-        }
+        crate::nodes::root::EncryptionType::File => match &additional_args.cipher_key_file {
+            Some(key_path) => decrypt_with_file_key(file_data, key_path, root_node),
+            None => {
+                log::error!(
+                    "No cipher key file path provided for decrypting file {}",
+                    root_node.file_name
+                );
+                Ok(())
+            }
+        },
         crate::nodes::root::EncryptionType::Url => {
-            todo!("URL decryption not implemented yet")
+            match additional_args.cipher_key_url.as_deref() {
+                Some(url) => decrypt_with_url_key(file_data, &url, root_node),
+                None => {
+                    log::error!(
+                        "No cipher key URL provided for decrypting file {}",
+                        root_node.file_name
+                    );
+                    Ok(())
+                }
+            }
         }
     }
 }
@@ -380,7 +427,7 @@ fn decrypt(
 ///
 /// This function checks if the loot directory exists, creates it if necessary,
 /// and writes the file data to disk using the original file name from the RootNode.
-fn save_file_to_disk(root_node: &RootNode, file_data: &[u8], loot_directory: &str) {
+fn save_file_to_disk(root_node: &RootNode, file_data: &[u8], loot_directory: &PathBuf) {
     match std::env::current_dir() {
         Ok(current_dir) => {
             log::info!(

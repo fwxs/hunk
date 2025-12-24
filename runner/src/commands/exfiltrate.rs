@@ -46,12 +46,15 @@ impl CipherKeyType {
             CipherKeyType::String(key_str) => Ok(key_str.bytes().collect()),
             CipherKeyType::File(path_buf) => Ok(crate::encoders::buffered_read_file(path_buf)?),
             CipherKeyType::Url(url) => {
-                let response = reqwest::blocking::get(url.clone()).map_err(|req_err| {
-                    crate::error::RunnerError::request_error(format!(
-                        "Failed to fetch cipher key from URL: {}",
-                        req_err
-                    ))
-                })?;
+                let response = match reqwest::blocking::get(url.clone()) {
+                    Ok(resp) => resp,
+                    Err(req_err) => {
+                        return Err(crate::error::RunnerError::request_error(format!(
+                            "Failed to fetch cipher key from URL: {}",
+                            req_err
+                        )))
+                    }
+                };
                 Ok(response.text()?.bytes().collect())
             }
         }
@@ -82,7 +85,16 @@ impl std::str::FromStr for CipherKeyType {
 
         match key_type.as_str() {
             "str" => Ok(CipherKeyType::String(key_value.to_string())),
-            "file" => Ok(CipherKeyType::File(PathBuf::from(shellexpand::full(key_value).map_err(|e| format!("Failed to expand file path: {}", e))?.to_string()))),
+            "file" => Ok(
+                CipherKeyType::File(
+                    PathBuf::from(
+                        match shellexpand::full(key_value) {
+                            Ok(expanded) => expanded.to_string(),
+                            Err(e) => return Err(format!("Failed to expand file path: {}", e)),
+                        }
+                    )
+                )
+            ),
             "url" => match reqwest::Url::parse(key_value) {
                 Ok(url) => Ok(CipherKeyType::Url(url)),
                 Err(e) => Err(format!("Invalid URL format: {}", e)),
