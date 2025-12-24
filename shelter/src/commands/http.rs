@@ -1,4 +1,7 @@
 use actix_web::{web, App, HttpServer};
+use tokio::sync::mpsc::Sender;
+
+use crate::nodes::Node;
 
 /// HTTP POST endpoint handler that receives exfiltrated file portions.
 ///
@@ -29,12 +32,12 @@ use actix_web::{web, App, HttpServer};
 /// - All errors are logged for diagnostic purposes
 pub async fn post_handler(
     req_body: String,
-    tx: actix_web::web::Data<tokio::sync::mpsc::Sender<crate::Node>>,
+    tx: actix_web::web::Data<Sender<Node>>,
 ) -> actix_web::Result<(), crate::error::http::HTTPResponseError> {
     log::info!("{} bytes received", req_body.len());
     log::debug!("Data received: {}", req_body);
 
-    let node_received = crate::Node::try_from(req_body)?;
+    let node_received = Node::try_from(req_body)?;
     log::info!("Sending node {} to queue", node_received.node_type());
     tx.send(node_received).await?;
 
@@ -109,10 +112,7 @@ impl HTTPServerTypeSubCommand {
     ///
     /// - Binding errors (port in use, permission denied) are returned as std::io::Error
     /// - Individual request errors are handled by post_handler and returned as HTTP responses
-    pub async fn handle(
-        &self,
-        transfer_channel: tokio::sync::mpsc::Sender<crate::Node>,
-    ) -> std::io::Result<()> {
+    pub async fn handle(&self, transfer_channel: Sender<Node>) -> std::io::Result<()> {
         log::info!("Launching shelter application on {}", self.http_server);
 
         HttpServer::new(move || {

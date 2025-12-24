@@ -1,3 +1,7 @@
+use tokio::sync::mpsc::Sender;
+
+use crate::nodes::Node;
+
 /// CLI entrypoint and argument definitions for the `shelter` application.
 ///
 /// `Cli` is the top-level clap parser used to select which server backend to
@@ -21,10 +25,7 @@ impl Cli {
     /// This method forwards the provided `transfer_channel` to the underlying
     /// server implementation. Handlers use that channel to send parsed
     /// `ExfiltratedFilePortion` messages to the background processor.
-    pub async fn handle(
-        self,
-        transfer_channel: tokio::sync::mpsc::Sender<crate::Node>,
-    ) -> std::io::Result<()> {
+    pub async fn handle(self, transfer_channel: Sender<Node>) -> std::io::Result<()> {
         match self.server_type {
             ServerType::HTTP(http_sub_cmd) => http_sub_cmd.handle(transfer_channel).await,
             ServerType::DNS(dns_sub_cmd) => dns_sub_cmd.handle(transfer_channel).await,

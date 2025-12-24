@@ -32,6 +32,7 @@ pub enum PayloadMetadata {
 impl std::fmt::Display for PayloadMetadata {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            // NOT IMPLEMENTED YET: z-{} for specifying compression type
             PayloadMetadata::Compressed => write!(f, "z"),
             PayloadMetadata::Encrypted(enc_type) => write!(f, "c-{}", enc_type.to_string()),
         }
@@ -183,7 +184,7 @@ impl std::fmt::Display for RootNode {
     ///
     /// # Example with Metadata
     /// If the same file is encrypted as a string and compressed:
-    /// Output: `r:confidential.pdf:aabbccdd:c:s:z`
+    /// Output: `r:confidential.pdf:aabbccdd:c-s|z`
     ///
     /// # Returns
     /// A formatted string representing the root node.
@@ -204,7 +205,7 @@ impl std::fmt::Display for RootNode {
                         data.into_iter()
                             .map(|metadata| metadata.to_string())
                             .collect::<Vec<String>>()
-                            .join(":")
+                            .join("|")
                     )
                 }
                 _ => String::new(),

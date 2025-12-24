@@ -1,5 +1,7 @@
 #![doc = "Application-level error types and conversions for the shelter exfiltration toolkit.\n\nThis module defines structured error types for all decoding, conversion, parsing,\nand channel operations that occur during the exfiltration data pipeline. It provides\nunified error handling that allows errors from different stages to be propagated\nconsistently.\n\n## Error Flow\n\nErrors originate at different stages of the exfiltration pipeline:\n\n1. **Transport Layer** (HTTP/DNS): Receives raw payload strings\n2. **Decoding Stage**: Hex and Base64 decoding of payloads\n3. **Conversion Stage**: UTF-8 conversion of decoded bytes\n4. **Parsing Stage**: Colon-delimited field extraction and integer parsing\n5. **Channel Stage**: Tokio MPSC channel send failures\n\n## Error Types\n\n- **DecodeError**: Hex or Base64 decoding failures (input format invalid)\n- **ConverterError**: UTF-8 or other type conversion failures\n- **ParserError**: Malformed field structure or invalid values\n- **TokioChannelProducerError**: Channel closed or send failed\n\n## Error Handling Strategy\n\nErrors are converted at layer boundaries:\n- Transport handlers convert AppError → HTTPResponseError or DNSError\n- HTTP handler maps decode/parse errors → HTTP 400 Bad Request\n- HTTP handler maps channel errors → HTTP 500 Internal Server Error\n- DNS handler maps errors → appropriate DNS response codes (SERVFAIL, NXDOMAIN)\n\nThis allows each layer to return protocol-appropriate responses while preserving\ndetailed error information for logging and diagnostics.\n"]
 
+use crate::nodes::Node;
+
 /// Result alias using the crate's `AppError` as the error type.
 pub type Result<T> = std::result::Result<T, AppError>;
 
@@ -190,6 +192,13 @@ impl TokioChannelProducerErrorStruct {
     }
 }
 
+/// Struct to represent ChaCha20 errors.
+#[derive(Debug)]
+pub struct ChaCha20ErrorStruct {
+    /// The error message.
+    msg: String,
+}
+
 /// Unified error type for all application-level failures in the exfiltration pipeline.
 ///
 /// This enum consolidates errors from all stages of payload processing into a
@@ -228,6 +237,27 @@ pub enum AppError {
     ParserError(ParserErrorStruct),
     /// MPSC channel send failed (background handler crashed or closed)
     TokioChannelProducerError(TokioChannelProducerErrorStruct),
+    /// ChaCha20 encryption/decryption error
+    ChaCha20Error(ChaCha20ErrorStruct),
+    /// Generic I/O error
+    IoError(std::io::Error),
+    /// Generic HTTP request error.
+    RequestError(String),
+}
+
+impl AppError {
+    /// Create a new ChaCha20 error with the provided message.
+    ///
+    /// ## Example
+    ///
+    /// ```ignore
+    /// AppError::ChaCha20Error(ChaCha20ErrorStruct::new("decryption failed".to_string()))
+    /// ```
+    pub fn chacha20_error(msg: &str) -> Self {
+        Self::ChaCha20Error(ChaCha20ErrorStruct {
+            msg: msg.to_string(),
+        })
+    }
 }
 
 impl std::fmt::Display for AppError {
@@ -258,6 +288,19 @@ impl std::fmt::Display for AppError {
                     "Background processor channel error. Msg: {}",
                     tokio_error.msg
                 )
+            }
+            Self::ChaCha20Error(chacha20_error) => {
+                write!(
+                    f,
+                    "ChaCha20 encryption/decryption error. Msg: {}",
+                    chacha20_error.msg
+                )
+            }
+            Self::IoError(io_error) => {
+                write!(f, "I/O error occurred. Msg: {}", io_error)
+            }
+            Self::RequestError(msg) => {
+                write!(f, "HTTP request error occurred. Msg: {}", msg)
             }
         }
     }
@@ -312,9 +355,22 @@ impl From<std::num::ParseIntError> for AppError {
 /// Channel failures indicate that the background processor is not running or has
 /// crashed. This is a critical failure that prevents file assembly and persistence.
 /// The error is logged immediately for diagnostics.
-impl From<tokio::sync::mpsc::error::SendError<crate::Node>> for AppError {
-    fn from(value: tokio::sync::mpsc::error::SendError<crate::Node>) -> Self {
+impl From<tokio::sync::mpsc::error::SendError<Node>> for AppError {
+    fn from(value: tokio::sync::mpsc::error::SendError<Node>) -> Self {
         log::error!("Failed to send data to processing queue: {}", value);
         Self::TokioChannelProducerError(TokioChannelProducerErrorStruct::new(format!("{}", value)))
+    }
+}
+
+/// Conversion from std::io::Error to the unified AppError type.
+impl From<std::io::Error> for AppError {
+    fn from(value: std::io::Error) -> Self {
+        Self::IoError(value)
+    }
+}
+
+impl From<reqwest::Error> for AppError {
+    fn from(value: reqwest::Error) -> Self {
+        Self::RequestError(format!("{}", value))
     }
 }

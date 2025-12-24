@@ -39,6 +39,8 @@
 //!
 //! All errors are logged at the application layer before conversion to HTTP responses.
 
+use crate::nodes::Node;
+
 #[derive(Debug)]
 /// HTTP error response variants for the exfiltration server.
 ///
@@ -133,11 +135,14 @@ impl From<super::app::AppError> for HTTPResponseError {
             super::app::AppError::ConverterError(_) => Self::BadRequest,
             super::app::AppError::DecodeError(_) => Self::BadRequest,
             crate::error::app::AppError::TokioChannelProducerError(_) => Self::InternalError,
+            crate::error::app::AppError::IoError(_) => Self::InternalError,
+            crate::error::app::AppError::ChaCha20Error(_) => Self::InternalError,
+            crate::error::app::AppError::RequestError(_) => Self::InternalError,
         }
     }
 }
 
-impl From<tokio::sync::mpsc::error::SendError<crate::Node>> for HTTPResponseError {
+impl From<tokio::sync::mpsc::error::SendError<Node>> for HTTPResponseError {
     /// Convert Tokio MPSC channel send failures into HTTP 500.
     ///
     /// Channel send errors indicate that the background processor task is no longer
@@ -161,7 +166,7 @@ impl From<tokio::sync::mpsc::error::SendError<crate::Node>> for HTTPResponseErro
     /// HTTP 500 Internal Server Error is returned to indicate this is not the client's
     /// fault. The server should be restarted to recover. The error is logged for
     /// diagnostic purposes.
-    fn from(value: tokio::sync::mpsc::error::SendError<crate::Node>) -> Self {
+    fn from(value: tokio::sync::mpsc::error::SendError<Node>) -> Self {
         log::error!("Failed to send data to processing queue: {}", value);
         Self::InternalError
     }

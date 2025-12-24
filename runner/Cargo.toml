@@ -5,14 +5,14 @@ edition = "2021"
 
 [dependencies]
 base64.workspace = true
-chacha20poly1305 = "0.10.1"
+chacha20poly1305.workspace = true
 chrono = "0.4.42"
 clap.workspace = true
 env_logger = "0.11.8"
 hex.workspace = true
 hickory-resolver.workspace = true
 log.workspace = true
-reqwest = { version = "0.12.15", features = ["blocking"] }
+reqwest.workspace = true
 shellexpand = "3.1.1"
 tokio.workspace = true
 urandom = "0.2.2"

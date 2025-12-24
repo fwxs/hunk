@@ -10,6 +10,9 @@ use hickory_server::{
     },
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
 };
+use tokio::sync::mpsc::Sender;
+
+use crate::nodes::Node;
 
 /// Transport protocol for the DNS server.
 ///
@@ -122,7 +125,7 @@ struct DNSHandler {
     root_zone: LowerName,
     /// Channel used to forward parsed Node instances to the background processor.
     /// Exfiltration data flows: DNS query → subdomain extraction → decoding → Node → channel
-    transfer_channel: tokio::sync::mpsc::Sender<crate::Node>,
+    transfer_channel: Sender<Node>,
 }
 
 impl DNSHandler {
@@ -140,7 +143,7 @@ impl DNSHandler {
     /// - The domain is parsed and lowercased for case-insensitive zone matching
     /// - All queries to subdomains of `exfil_domain` are processed
     /// - Queries to other domains result in NXDOMAIN responses
-    fn new(exfil_domain: String, transfer_channel: tokio::sync::mpsc::Sender<crate::Node>) -> Self {
+    fn new(exfil_domain: String, transfer_channel: Sender<Node>) -> Self {
         DNSHandler {
             root_zone: LowerName::from(Name::from_str(exfil_domain.as_str()).unwrap()),
             transfer_channel,
@@ -187,7 +190,7 @@ impl DNSHandler {
 
         // Parse the subdomain as a Node (this performs hex→base64→utf8→field parsing)
         self.transfer_channel
-            .send(crate::Node::try_from(decoded_payload)?)
+            .send(Node::try_from(decoded_payload)?)
             .await?;
 
         // Return TXT record acknowledging successful reception
@@ -354,10 +357,7 @@ impl DNSServerTypeSubCommand {
     /// - Binding errors (port in use, permission denied): Returned as std::io::Error
     /// - Query processing errors: Converted to DNS error codes (NXDOMAIN, SERVFAIL)
     /// - Invalid queries: Logged and responded to appropriately
-    pub async fn handle(
-        &self,
-        transfer_channel: tokio::sync::mpsc::Sender<crate::Node>,
-    ) -> std::io::Result<()> {
+    pub async fn handle(&self, transfer_channel: Sender<Node>) -> std::io::Result<()> {
         log::info!(
             "Starting DNS server on {} for domain {} over {:?}",
             self.listen_addr,

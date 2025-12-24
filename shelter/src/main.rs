@@ -30,6 +30,7 @@
 // TODO! Add TLS support
 
 use clap::Parser;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tracing_subscriber::prelude::*;
 
 /// Application entrypoint and runtime initialization.
@@ -73,8 +74,8 @@ async fn main() -> std::io::Result<()> {
         .init();
 
     let (transfer_channel, receiver_channel): (
-        tokio::sync::mpsc::Sender<shelter::Node>,
-        tokio::sync::mpsc::Receiver<shelter::Node>,
+        Sender<shelter::nodes::Node>,
+        Receiver<shelter::nodes::Node>,
     ) = tokio::sync::mpsc::channel(10);
 
     let cli_args = shelter::commands::base::Cli::parse();
