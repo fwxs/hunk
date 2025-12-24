@@ -367,10 +367,9 @@ runner exfil dns \
 - [x] **Add Logging Options** - Structured logging for operational tracking and debugging
 - [x] **Add Encryption Options** - Implement ChaCha20-Poly1305 AEAD encryption for payload confidentiality
 - [x] **Key Management options** - Support string, file-based, and URL-based key retrieval
-- [ ] **Add Retry Mechanisms** - Automatic retry on transmission failures with exponential backoff
 - [ ] **Add Shuffle Option** - Randomize chunk transmission order to evade pattern detection
 - [ ] **Add Random delay** - Introduce random variance in delay intervals between payload chunks
-- [ ] **Add Key Rotation** - Support for rotating encryption keys between file exfiltrations
+- [ ] **Add Retry Mechanisms** - Automatic retry on transmission failures with exponential backoff
 
 ### Medium Priority
 - [ ] **Add Different Exfiltration Methods**:
@@ -381,8 +380,6 @@ runner exfil dns \
   - [ ] Cloud storage APIs (S3, GCS, Azure Blob)
 - [ ] **Add Progress Indicators** - Real-time progress bars and transmission statistics
 - [ ] **Add Compression Options** - Implement gzip/zlib compression before encryption to reduce payload size
-- [ ] **Encryption Algorithm Options** - Support for AES-GCM, XChaCha20-Poly1305 for additional flexibility
-- [ ] **Key Derivation** - PBKDF2/Argon2 for deriving keys from passwords
 
 ### Low Priority
 - [ ] Add steganography support (hide data in images/audio)

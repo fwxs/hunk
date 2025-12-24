@@ -2150,6 +2150,7 @@ dependencies = [
  "hickory-server",
  "log",
  "reqwest",
+ "shellexpand",
  "tokio",
  "tracing-actix-web",
  "tracing-subscriber",

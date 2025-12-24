@@ -81,9 +81,12 @@ async fn main() -> std::io::Result<()> {
     let cli_args = shelter::commands::base::Cli::parse();
 
     log::info!("Launching waiting queue processor tokio channel...");
+
+    cli_args.additional_args.validate_cipher_key_existence();
+
     tokio::spawn(shelter::event_handler::handle_received_data(
         receiver_channel,
-        cli_args.loot_directory.clone(),
+        cli_args.additional_args.clone(),
     ));
 
     cli_args.handle(transfer_channel).await

